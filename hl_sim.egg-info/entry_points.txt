@@ -1,0 +1,3 @@
+[console_scripts]
+sim-bridge = bridge.sim_bridge:main
+test-scene = scripts.test_scene:main

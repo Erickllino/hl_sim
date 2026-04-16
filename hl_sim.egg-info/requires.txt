@@ -1,0 +1,5 @@
+mujoco>=3.0.0
+numpy>=2.0.0
+
+[locomotion]
+torch>=2.11.0

@@ -1,0 +1,27 @@
+# --- Made by Erick -----
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hl-sim"
+version = "0.1.0"
+description = "Simulador MuJoCo para futebol de robô humanoide T1"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "mujoco>=3.0.0",
+    "numpy>=2.0.0",
+]
+
+[project.optional-dependencies]
+# Fase 2+: locomotion policy (torch já presente no hl_unification venv)
+locomotion = [
+    "torch>=2.11.0",
+]
+
+[project.scripts]
+test-scene  = "scripts.test_scene:main"
+sim-bridge  = "bridge.sim_bridge:main"
+
+[tool.setuptools.packages.find]
+include = ["scripts*", "bridge*"]
