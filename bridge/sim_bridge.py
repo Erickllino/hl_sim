@@ -258,10 +258,11 @@ class SimBridge:
                     t_sim   = step * self.m.opt.timestep
                     trunk_z = self.d.xpos[TRUNK_BODY_ID][2]
                     ball    = self.d.xpos[BALL_BODY_ID]
-                    phase   = self.agents[0]._phase.name
+                    phase = getattr(self.agents[0], '_phase', None)
+                    phase_str = phase.name if phase is not None else 'ros2'
                     _info(f"t={t_sim:6.1f}s  trunk_z={trunk_z:.3f}  "
                           f"ball=({ball[0]:.2f},{ball[1]:.2f})  "
-                          f"phase={phase}")
+                          f"phase={phase_str}")
 
         except KeyboardInterrupt:
             print(f"\n{DIM}interrompido pelo usuário{RESET}")

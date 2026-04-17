@@ -22,6 +22,7 @@ locomotion = [
 [project.scripts]
 test-scene  = "scripts.test_scene:main"
 sim-bridge  = "bridge.sim_bridge:main"
+sim-ros2    = "scripts.run_ros2:main"
 
 [tool.setuptools.packages.find]
 include = ["scripts*", "bridge*"]

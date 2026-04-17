@@ -1,3 +1,4 @@
 [console_scripts]
 sim-bridge = bridge.sim_bridge:main
+sim-ros2 = scripts.run_ros2:main
 test-scene = scripts.test_scene:main
