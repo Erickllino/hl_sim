@@ -1,0 +1,9 @@
+<assets>
+  <texture type="skybox" builtin="gradient"
+           rgb1="0.4 0.6 0.8" rgb2="0.1 0.1 0.2" width="512" height="512"/>
+  <texture name="grass" type="2d" builtin="checker" width="512" height="512"
+           rgb1="0.13 0.55 0.13" rgb2="0.06 0.35 0.06"/>
+  <material name="field_mat" texture="grass" texrepeat="8 8" reflectance="0.05"/>
+  <material name="line_mat"  rgba="1 1 1 1"/>
+  <material name="goal_mat"  rgba="1 1 1 1"/>
+</assets>

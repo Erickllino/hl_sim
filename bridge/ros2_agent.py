@@ -4,7 +4,7 @@ bridge/ros2_agent.py — Fase 3: ponte ROS2 entre SimBridge e hsl-player
 Publica sensores do simulador nos tópicos esperados pelo brain e converte
 comandos ROS2 recebidos do brain em ActionCmd para o SimBridge.
 
-Tópicos publicados (sim → brain):
+Tópicos publicados (sim → brain/deploy):
     /low_state                    booster_interface/msg/LowState
     /odometer_state               booster_interface/msg/Odometer
     /booster_vision/detection     vision_interface/msg/Detections
@@ -12,9 +12,9 @@ Tópicos publicados (sim → brain):
     /robocup/game_controller      game_controller_interface/msg/GameControlData
     /head_pose                    geometry_msgs/msg/Pose
 
-Tópicos assinados (brain → sim):
-    LocoApiTopicReq               booster_msgs/msg/RpcReqMsg
-    /rl_move                      geometry_msgs/msg/Twist
+Tópicos assinados:
+    LocoApiTopicReq               booster_msgs/msg/RpcReqMsg   (brain → sim: head, shoot)
+    /joint_ctrl                   booster_interface/msg/LowCmd (deploy → sim: joint targets)
 """
 from __future__ import annotations
 
@@ -28,10 +28,10 @@ import rclpy
 from rclpy.node import Node
 
 from booster_msgs.msg import RpcReqMsg
-from booster_interface.msg import LowState, Odometer, MotorState
+from booster_interface.msg import LowState, LowCmd, Odometer, MotorState
 from vision_interface.msg import Detections, DetectedObject, LineSegments
 from game_controller_interface.msg import GameControlData
-from geometry_msgs.msg import Pose, Twist
+from geometry_msgs.msg import Pose
 
 from bridge.agent_interface import AgentInterface, ActionCmd, SensorState
 
@@ -43,13 +43,22 @@ KSHOOT       = 2024   # {} — one-shot
 # ── índices das juntas no qpos/qvel (de sim_bridge.py) ────────────────────────
 # qpos[0:7]   = ball free-joint (x y z qw qx qy qz)
 # qpos[7:14]  = trunk free-joint (x y z qw qx qy qz)
-# qpos[14:37] = 23 posições de junta
+# qpos[14:37] = 23 posições de junta (head_yaw, head_pitch, 21 body joints)
 # qvel[0:6]   = ball dof
 # qvel[6:12]  = trunk dof
 # qvel[12:35] = 23 velocidades de junta
-JOINT_QPOS_START = 14
-JOINT_QVEL_START = 12
-NUM_JOINTS       = 23
+JOINT_QPOS_START      = 14
+JOINT_QVEL_START      = 12
+NUM_JOINTS            = 23
+NUM_BODY_JOINTS       = 21   # body joints without head (2)
+JOINT_QPOS_BODY_START = JOINT_QPOS_START + 2  # skip head_yaw, head_pitch
+JOINT_QVEL_BODY_START = JOINT_QVEL_START + 2
+
+# ── sensordata layout (soccer_scene.xml sensors section) ─────────────────────
+# sensordata[0:4] = framequat orientation (w, x, y, z)
+# sensordata[4:7] = gyro angular-velocity body frame (wx, wy, wz)
+SENSOR_QUAT_IDX = 0
+SENSOR_GYRO_IDX = 4
 
 # ── GameControlData state values ───────────────────────────────────────────────
 GC_INITIAL  = 0
@@ -78,8 +87,9 @@ class ROS2Agent(AgentInterface):
         self._cmd        = ActionCmd()
         self._lock       = threading.Lock()
         self._game_state = GC_INITIAL
+        self._joint_pos  = None  # 21 body joint targets from deploy (/joint_ctrl)
 
-        # ── publishers (sim → brain) ───────────────────────────────────────────
+        # ── publishers (sim → brain/deploy) ───────────────────────────────────
         self._pub_low   = node.create_publisher(LowState,        '/low_state',                    10)
         self._pub_odom  = node.create_publisher(Odometer,        '/odometer_state',               10)
         self._pub_det   = node.create_publisher(Detections,      '/booster_vision/detection',     10)
@@ -87,9 +97,9 @@ class ROS2Agent(AgentInterface):
         self._pub_gc    = node.create_publisher(GameControlData, '/robocup/game_controller',      10)
         self._pub_head  = node.create_publisher(Pose,            '/head_pose',                    10)
 
-        # ── subscribers (brain → sim) ──────────────────────────────────────────
-        node.create_subscription(RpcReqMsg, 'LocoApiTopicReq', self._on_loco,    10)
-        node.create_subscription(Twist,     '/rl_move',         self._on_rl_move, 10)
+        # ── subscribers ────────────────────────────────────────────────────────
+        node.create_subscription(RpcReqMsg, 'LocoApiTopicReq', self._on_loco,       10)
+        node.create_subscription(LowCmd,    '/joint_ctrl',      self._on_joint_ctrl, 10)
 
         # ── game controller: publica estado a 1 Hz ─────────────────────────────
         node.create_timer(1.0, self._publish_game_controller)
@@ -103,7 +113,8 @@ class ROS2Agent(AgentInterface):
     def reset(self) -> None:
         with self._lock:
             self._cmd        = ActionCmd()
-            self._game_state = GC_PLAYING
+            self._joint_pos  = None
+            self._game_state = GC_INITIAL
 
     def step(self, state: SensorState) -> ActionCmd:
         self._publish_sensors(state)
@@ -115,6 +126,7 @@ class ROS2Agent(AgentInterface):
                 head_yaw   = self._cmd.head_yaw,
                 head_pitch = self._cmd.head_pitch,
                 shoot      = self._cmd.shoot,
+                joint_pos  = self._joint_pos.copy() if self._joint_pos is not None else None,
             )
             self._cmd.shoot = False  # shoot é one-shot
         return cmd
@@ -142,30 +154,48 @@ class ROS2Agent(AgentInterface):
             elif api_id == KSHOOT:
                 self._cmd.shoot = True
 
-    def _on_rl_move(self, msg: Twist) -> None:
+    def _on_joint_ctrl(self, msg: LowCmd) -> None:
+        cmds = msg.motor_cmd
+        n = min(len(cmds), NUM_BODY_JOINTS)
+        pos = np.array([cmds[i].q for i in range(n)], dtype=np.float64)
         with self._lock:
-            self._cmd.vx   = msg.linear.x
-            self._cmd.vy   = msg.linear.y
-            self._cmd.vyaw = msg.angular.z
+            self._joint_pos = pos
 
     # ── publishers (sim → brain) ───────────────────────────────────────────────
 
     def _publish_sensors(self, state: SensorState) -> None:
-        self._publish_low_state(state)
-        self._publish_odometer(state)
-        self._publish_detections(state)
-        self._pub_lines.publish(LineSegments())
-        self._publish_head_pose(state)
+        self._publish_low_state(state) # /low_state
+        self._publish_odometer(state) # /odometer_state
+        self._publish_detections(state) # /booster_vision/detection
+        self._pub_lines.publish(LineSegments()) # /booster_vision/line_segments (não implementado, mas o brain espera o tópico)
+        self._publish_head_pose(state) # /head_pose
 
     def _publish_low_state(self, state: SensorState) -> None:
         msg = LowState()
-        q  = state.qpos[JOINT_QPOS_START: JOINT_QPOS_START + NUM_JOINTS]
-        dq = state.qvel[JOINT_QVEL_START: JOINT_QVEL_START + NUM_JOINTS]
-        for i in range(NUM_JOINTS):
+
+        # 21 body joints (skip head_yaw[0] and head_pitch[1])
+        q  = state.qpos[JOINT_QPOS_BODY_START: JOINT_QPOS_BODY_START + NUM_BODY_JOINTS]
+        dq = state.qvel[JOINT_QVEL_BODY_START: JOINT_QVEL_BODY_START + NUM_BODY_JOINTS]
+        for i in range(NUM_BODY_JOINTS):
             motor = MotorState()
             motor.q  = float(q[i])
             motor.dq = float(dq[i])
             msg.motor_state_serial.append(motor)
+
+        # IMU from MuJoCo sensors: framequat (w,x,y,z) + gyro body frame (wx,wy,wz)
+        if state.sensordata is not None and len(state.sensordata) >= 7:
+            qw = float(state.sensordata[SENSOR_QUAT_IDX])
+            qx = float(state.sensordata[SENSOR_QUAT_IDX + 1])
+            qy = float(state.sensordata[SENSOR_QUAT_IDX + 2])
+            qz = float(state.sensordata[SENSOR_QUAT_IDX + 3])
+            roll, pitch, yaw = _quat_to_rpy(qw, qx, qy, qz)
+            msg.imu_state.rpy = [roll, pitch, yaw]
+            msg.imu_state.gyro = [
+                float(state.sensordata[SENSOR_GYRO_IDX]),
+                float(state.sensordata[SENSOR_GYRO_IDX + 1]),
+                float(state.sensordata[SENSOR_GYRO_IDX + 2]),
+            ]
+
         self._pub_low.publish(msg)
 
     def _publish_odometer(self, state: SensorState) -> None:
@@ -235,6 +265,22 @@ class ROS2Agent(AgentInterface):
 
 
 # ── helpers de geometria ───────────────────────────────────────────────────────
+
+def _quat_to_rpy(w: float, x: float, y: float, z: float):
+    """Quaternion (w, x, y, z) → (roll, pitch, yaw) in radians."""
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
 
 def _quat_to_yaw(q: np.ndarray) -> float:
     """MuJoCo quaternion (w, x, y, z) → yaw (rad)."""

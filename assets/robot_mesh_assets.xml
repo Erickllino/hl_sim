@@ -1,0 +1,27 @@
+<assets>
+  <mesh name="Trunk"             file="Trunk.STL"/>
+  <mesh name="H1"                file="H1.STL"/>
+  <mesh name="H2"                file="H2.STL"/>
+  <mesh name="AL1"               file="AL1.STL"/>
+  <mesh name="AL2"               file="AL2.STL"/>
+  <mesh name="AL3"               file="AL3.STL"/>
+  <mesh name="left_hand_link"    file="left_hand_link.STL"/>
+  <mesh name="AR1"               file="AR1.STL"/>
+  <mesh name="AR2"               file="AR2.STL"/>
+  <mesh name="AR3"               file="AR3.STL"/>
+  <mesh name="right_hand_link"   file="right_hand_link.STL"/>
+  <mesh name="Waist"             file="Waist.STL"/>
+  <mesh name="Hip_Pitch_Left"    file="Hip_Pitch_Left.STL"/>
+  <mesh name="Hip_Roll_Left"     file="Hip_Roll_Left.STL"/>
+  <mesh name="Hip_Yaw_Left"      file="Hip_Yaw_Left.STL"/>
+  <mesh name="Shank_Left"        file="Shank_Left.STL"/>
+  <mesh name="Ankle_Cross_Left"  file="Ankle_Cross_Left.STL"/>
+  <mesh name="left_foot_link"    file="left_foot_link.STL"/>
+  <mesh name="Hip_Pitch_Right"   file="Hip_Pitch_Right.STL"/>
+  <mesh name="Hip_Roll_Right"    file="Hip_Roll_Right.STL"/>
+  <mesh name="Hip_Yaw_Right"     file="Hip_Yaw_Right.STL"/>
+  <mesh name="Shank_Right"       file="Shank_Right.STL"/>
+  <mesh name="Ankle_Cross_Right" file="Ankle_Cross_Right.STL"/>
+  <mesh name="right_foot_link"   file="right_foot_link.STL"/>
+  <mesh name="Logo"              file="Logo.STL"/>
+</assets>

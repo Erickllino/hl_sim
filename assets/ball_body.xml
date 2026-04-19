@@ -1,0 +1,9 @@
+<worldbody>
+  <!-- RoboCup HL size 5 (r≈0.11 m, ~450 g) -->
+  <body name="ball" pos="0 0 0.11">
+    <joint name="ball_free" type="free"/>
+    <geom name="ball" type="sphere" size="0.11" mass="0.45"
+          material="ball_mat" condim="4" friction="0.8 0.005 0.0001"
+          solimp="0.9 0.95 0.001" solref="0.02 1"/>
+  </body>
+</worldbody>

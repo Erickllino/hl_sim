@@ -1,5 +1,5 @@
 """
-bridge/sim_bridge.py — MuJoCo simulation bridge (Phase 2, no ROS2)
+bridge/sim_bridge.py — MuJoCo simulation bridge (3v3, 6 robots)
 
 Kinematic locomotion:
   • Joint positions held at HOME_CTRL (static standing pose).
@@ -7,11 +7,18 @@ Kinematic locomotion:
   • Trunk z fixed at TRUNK_HEIGHT — no fall physics in base (no locomotion policy).
   • Shoot command applies a brief xfrc_applied impulse on the ball.
 
+Robot order in scene (matches <include> order in soccer_scene.xml):
+  idx 0 → robot1  (team 1, gray)    pos (-1,  0.0)
+  idx 1 → robot3  (team 1, gray)    pos (-2,  1.5)
+  idx 2 → robot5  (team 1, gray)    pos (-2, -1.5)
+  idx 3 → robot2  (team 2, red)     pos ( 1,  0.0)
+  idx 4 → robot4  (team 2, red)     pos ( 2,  1.5)
+  idx 5 → robot6  (team 2, red)     pos ( 2, -1.5)
+
 Usage:
     uv run python -m bridge.sim_bridge
     uv run python -m bridge.sim_bridge --viewer
     uv run python -m bridge.sim_bridge --duration 60 --speed 2.0
-    uv run sim-bridge --viewer
 """
 from __future__ import annotations
 
@@ -23,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from bridge.default_agent import DefaultAgent
 import numpy as np
 
 try:
@@ -41,25 +49,35 @@ CONTROL_HZ      = 50
 SIM_HZ          = 200
 STEPS_PER_CTRL  = SIM_HZ // CONTROL_HZ   # = 4
 
-# ── scene body indices (verified against soccer_scene.xml) ─────────────────────
-#   0=world  1=goal_right  2=goal_left  3=ball  4=Trunk  5..28=T1 links
-BALL_BODY_ID  = 3
-TRUNK_BODY_ID = 4
+# ── scene constants ────────────────────────────────────────────────────────────
+BALL_BODY_ID            = 3
+NUM_ACTUATORS_PER_ROBOT = 23
+SENSOR_BLOCK            = 7   # framequat(4) + gyro(3) per robot
+TRUNK_HEIGHT            = 0.75
 
-# ── Trunk free-joint in qpos/qvel (world_joint, qposadr=7, dofadr=6) ──────────
-TRUNK_QPOSADR = 7    # qpos[7:14] = [x, y, z, qw, qx, qy, qz]
-TRUNK_DOFADR  = 6    # qvel[6:12] = [vx, vy, vz, wx, wy, wz]
+# ── per-robot layout (6 robots in scene order: 1,3,5,2,4,6) ───────────────────
+#
+#  Body IDs: world(0) goal_right(1) goal_left(2) ball(3)
+#            then 24 bodies per robot (Trunk + 23 links)
+#
+#  qpos: ball(7) + per robot: trunk_free(7) + joints(23) = 30
+#  qvel: ball(6) + per robot: trunk_free(6) + joints(23) = 29
+#
+_BODIES_BEFORE_ROBOTS = 4   # world, goal_right, goal_left, ball
+_BODIES_PER_ROBOT     = 24
+_QPOS_BALL            = 7
+_QPOS_PER_ROBOT       = 30  # 7 free + 23 joints
+_QVEL_BALL            = 6
+_QVEL_PER_ROBOT       = 29  # 6 free + 23 joints
 
-# ── kinematic height ───────────────────────────────────────────────────────────
-TRUNK_HEIGHT = 0.75  # m  — fixed z in kinematic mode
+NUM_ROBOTS = 6
+
+TRUNK_BODY_IDS  = [_BODIES_BEFORE_ROBOTS + i * _BODIES_PER_ROBOT for i in range(NUM_ROBOTS)]
+TRUNK_QPOS_ADRS = [_QPOS_BALL            + i * _QPOS_PER_ROBOT   for i in range(NUM_ROBOTS)]
+TRUNK_DOF_ADRS  = [_QVEL_BALL            + i * _QVEL_PER_ROBOT   for i in range(NUM_ROBOTS)]
+SENSOR_STARTS   = [i * SENSOR_BLOCK                               for i in range(NUM_ROBOTS)]
 
 # ── default joint targets (23 actuators) ──────────────────────────────────────
-#   [0]  AAHead_yaw          [1]  Head_pitch
-#   [2]  LShoulderPitch      [3]  LShoulderRoll   [4]  LElbowPitch  [5]  LElbowYaw
-#   [6]  RShoulderPitch      [7]  RShoulderRoll   [8]  RElbowPitch  [9]  RElbowYaw
-#   [10] Waist
-#   [11] LHipPitch [12] LHipRoll [13] LHipYaw [14] LKneePitch [15] LAnklePitch [16] LAnkleRoll
-#   [17] RHipPitch [18] RHipRoll [19] RHipYaw [20] RKneePitch [21] RAnklePitch [22] RAnkleRoll
 HOME_CTRL = np.array([
     0.0,  0.0,                          # head
     0.2, -1.3,  0.0, -0.5,             # L arm
@@ -82,7 +100,6 @@ def _err(msg):  print(f"  {RED}✗{RESET} {msg}")
 
 @dataclass
 class _KinState:
-    """Integrated pose for one robot's base (trunk free joint)."""
     x:   float = 0.0
     y:   float = 0.0
     yaw: float = 0.0
@@ -91,38 +108,26 @@ class _KinState:
 # ── SimBridge ──────────────────────────────────────────────────────────────────
 
 class SimBridge:
-    """
-    Orchestrates MuJoCo physics + N agent instances.
-
-    Current limitation: scene has 1 robot (1 free joint for Trunk).
-    Multi-robot support requires duplicating the robot body in the scene
-    and extending the joint-index map — see ROADMAP_ROS2.md.
-    """
-
-    SHOOT_FORCE = 80.0   # N — applied to ball during shoot
-    SHOOT_TICKS = 5      # ctrl ticks the force is applied
+    SHOOT_FORCE = 10.0
+    SHOOT_TICKS = 5
 
     def __init__(self, agents: list[AgentInterface]) -> None:
         if not SCENE_PATH.exists():
             raise FileNotFoundError(f"Scene not found: {SCENE_PATH}")
+        if len(agents) > NUM_ROBOTS:
+            raise ValueError(f"Scene supports at most {NUM_ROBOTS} robots.")
 
         self.m = mujoco.MjModel.from_xml_path(str(SCENE_PATH))
         self.d = mujoco.MjData(self.m)
-
-        if len(agents) > 1:
-            raise NotImplementedError(
-                "Multi-robot: duplicate robot body in scene first. "
-                "See ROADMAP_ROS2.md §Multi-robot."
-            )
         self.agents = agents
 
-        self._kin:              list[_KinState] = [_KinState() for _ in agents]
-        self._shoot_remaining:  list[int]        = [0] * len(agents)
+        self._kin:             list[_KinState] = [_KinState() for _ in agents]
+        self._shoot_remaining: list[int]        = [0] * len(agents)
         self._tick = 0
 
         _ok(f"Modelo carregado  nbody={self.m.nbody}  nu={self.m.nu}  "
             f"nq={self.m.nq}  nv={self.m.nv}")
-        _ok(f"Agentes: {[a.robot_name for a in agents]}")
+        _ok(f"Agentes ({len(agents)}): {[a.robot_name for a in agents]}")
 
     # ── episode reset ──────────────────────────────────────────────────────────
 
@@ -130,12 +135,12 @@ class SimBridge:
         mujoco.mj_resetDataKeyframe(self.m, self.d, 0)
         mujoco.mj_forward(self.m, self.d)
 
-        # seed kinematic state from keyframe trunk position
-        q0 = self.d.qpos[TRUNK_QPOSADR: TRUNK_QPOSADR + 7]
-        for ks in self._kin:
-            ks.x   = float(q0[0])
-            ks.y   = float(q0[1])
-            ks.yaw = _quat_to_yaw(q0[3:7])
+        for i, ks in enumerate(self._kin):
+            adr = TRUNK_QPOS_ADRS[i]
+            q   = self.d.qpos[adr: adr + 7]
+            ks.x   = float(q[0])
+            ks.y   = float(q[1])
+            ks.yaw = _quat_to_yaw(q[3:7])
 
         self._shoot_remaining = [0] * len(self.agents)
         self._tick = 0
@@ -149,58 +154,67 @@ class SimBridge:
         return SensorState(
             qpos       = self.d.qpos.copy(),
             qvel       = self.d.qvel.copy(),
-            trunk_pos  = self.d.xpos[TRUNK_BODY_ID].copy(),
-            trunk_quat = self.d.xquat[TRUNK_BODY_ID].copy(),
+            trunk_pos  = self.d.xpos[TRUNK_BODY_IDS[i]].copy(),
+            trunk_quat = self.d.xquat[TRUNK_BODY_IDS[i]].copy(),
             ball_pos   = self.d.xpos[BALL_BODY_ID].copy(),
             tick       = self._tick,
+            sensordata = self.d.sensordata[
+                SENSOR_STARTS[i]: SENSOR_STARTS[i] + SENSOR_BLOCK
+            ].copy(),
         )
 
     def _apply(self, i: int, cmd: ActionCmd) -> None:
-        ks  = self._kin[i]
-        dt  = 1.0 / CONTROL_HZ
+        ks         = self._kin[i]
+        dt         = 1.0 / CONTROL_HZ
+        ctrl_start = i * NUM_ACTUATORS_PER_ROBOT
+        qposadr    = TRUNK_QPOS_ADRS[i]
+        dofadr     = TRUNK_DOF_ADRS[i]
+        trunk_id   = TRUNK_BODY_IDS[i]
 
-        # integrate base pose (body frame → world frame)
-        c, s    = math.cos(ks.yaw), math.sin(ks.yaw)
-        ks.x   += (cmd.vx * c - cmd.vy * s) * dt
-        ks.y   += (cmd.vx * s + cmd.vy * c) * dt
-        ks.yaw += cmd.vyaw * dt
-        ks.yaw  = (ks.yaw + math.pi) % (2.0 * math.pi) - math.pi  # wrap
+        if cmd.joint_pos is not None:
+            ctrl = HOME_CTRL.copy()
+            ctrl[0] = cmd.head_yaw
+            ctrl[1] = cmd.head_pitch
+            n = min(len(cmd.joint_pos), NUM_ACTUATORS_PER_ROBOT - 2)
+            ctrl[2: 2 + n] = cmd.joint_pos[:n]
+            self.d.ctrl[ctrl_start: ctrl_start + NUM_ACTUATORS_PER_ROBOT] = ctrl
+        else:
+            c, s    = math.cos(ks.yaw), math.sin(ks.yaw)
+            ks.x   += (cmd.vx * c - cmd.vy * s) * dt
+            ks.y   += (cmd.vx * s + cmd.vy * c) * dt
+            ks.yaw += cmd.vyaw * dt
+            ks.yaw  = (ks.yaw + math.pi) % (2.0 * math.pi) - math.pi
 
-        # write trunk free-joint — xyz + quaternion
-        h = ks.yaw * 0.5
-        self.d.qpos[TRUNK_QPOSADR + 0] = ks.x
-        self.d.qpos[TRUNK_QPOSADR + 1] = ks.y
-        self.d.qpos[TRUNK_QPOSADR + 2] = TRUNK_HEIGHT
-        self.d.qpos[TRUNK_QPOSADR + 3] = math.cos(h)   # w
-        self.d.qpos[TRUNK_QPOSADR + 4] = 0.0            # x
-        self.d.qpos[TRUNK_QPOSADR + 5] = 0.0            # y
-        self.d.qpos[TRUNK_QPOSADR + 6] = math.sin(h)   # z
+            h = ks.yaw * 0.5
+            self.d.qpos[qposadr + 0] = ks.x
+            self.d.qpos[qposadr + 1] = ks.y
+            self.d.qpos[qposadr + 2] = TRUNK_HEIGHT
+            self.d.qpos[qposadr + 3] = math.cos(h)
+            self.d.qpos[qposadr + 4] = 0.0
+            self.d.qpos[qposadr + 5] = 0.0
+            self.d.qpos[qposadr + 6] = math.sin(h)
+            self.d.qvel[dofadr: dofadr + 6] = 0.0
 
-        # zero trunk velocity (kinematic — prevent drift accumulation)
-        self.d.qvel[TRUNK_DOFADR: TRUNK_DOFADR + 6] = 0.0
+            ctrl = HOME_CTRL.copy()
+            ctrl[0] = cmd.head_yaw
+            ctrl[1] = cmd.head_pitch
+            self.d.ctrl[ctrl_start: ctrl_start + NUM_ACTUATORS_PER_ROBOT] = ctrl
 
-        # joint ctrl
-        ctrl = HOME_CTRL.copy()
-        ctrl[0] = cmd.head_yaw
-        ctrl[1] = cmd.head_pitch
-        self.d.ctrl[:] = ctrl
-
-        # shoot impulse
         if cmd.shoot and self._shoot_remaining[i] == 0:
             self._shoot_remaining[i] = self.SHOOT_TICKS
 
-        self.d.xfrc_applied[BALL_BODY_ID] = 0.0
         if self._shoot_remaining[i] > 0:
-            fx = self.SHOOT_FORCE * math.cos(ks.yaw)
-            fy = self.SHOOT_FORCE * math.sin(ks.yaw)
-            self.d.xfrc_applied[BALL_BODY_ID, 0] = fx
-            self.d.xfrc_applied[BALL_BODY_ID, 1] = fy
+            trunk_yaw = _quat_to_yaw(self.d.xquat[trunk_id])
+            fx = self.SHOOT_FORCE * math.cos(trunk_yaw)
+            fy = self.SHOOT_FORCE * math.sin(trunk_yaw)
+            self.d.xfrc_applied[BALL_BODY_ID, 0] += fx
+            self.d.xfrc_applied[BALL_BODY_ID, 1] += fy
             self._shoot_remaining[i] -= 1
 
     # ── control tick ───────────────────────────────────────────────────────────
 
     def _ctrl_tick(self) -> None:
-        """One 50 Hz tick: sense → think → actuate → step physics × 4."""
+        self.d.xfrc_applied[BALL_BODY_ID] = 0.0
         for i, agent in enumerate(self.agents):
             cmd = agent.step(self._sensor(i))
             self._apply(i, cmd)
@@ -216,14 +230,6 @@ class SimBridge:
         viewer:   bool  = False,
         speed:    float = 1.0,
     ) -> None:
-        """
-        Run the bridge loop.
-
-        Args:
-            duration: simulated seconds (0 = run indefinitely until Ctrl-C)
-            viewer:   open MuJoCo interactive viewer window
-            speed:    wall-clock speedup (1.0 = real-time, 0 = as fast as possible)
-        """
         self.reset()
         steps_total = int(duration / self.m.opt.timestep) if duration > 0 else None
 
@@ -235,8 +241,7 @@ class SimBridge:
     # ── headless loop ──────────────────────────────────────────────────────────
 
     def _loop_headless(self, steps_total: Optional[int], speed: float) -> None:
-        print(f"\n{BOLD}SimBridge headless{RESET}  "
-              f"(Ctrl-C para parar)\n")
+        print(f"\n{BOLD}SimBridge headless{RESET}  (Ctrl-C para parar)\n")
 
         step    = 0
         t_wall0 = time.perf_counter()
@@ -253,12 +258,11 @@ class SimBridge:
                     if lag > 0:
                         time.sleep(lag)
 
-                # status line every 5 s of simulated time
                 if step % (CONTROL_HZ * STEPS_PER_CTRL * 5) == 0:
                     t_sim   = step * self.m.opt.timestep
-                    trunk_z = self.d.xpos[TRUNK_BODY_ID][2]
+                    trunk_z = self.d.xpos[TRUNK_BODY_IDS[0]][2]
                     ball    = self.d.xpos[BALL_BODY_ID]
-                    phase = getattr(self.agents[0], '_phase', None)
+                    phase   = getattr(self.agents[0], '_phase', None)
                     phase_str = phase.name if phase is not None else 'ros2'
                     _info(f"t={t_sim:6.1f}s  trunk_z={trunk_z:.3f}  "
                           f"ball=({ball[0]:.2f},{ball[1]:.2f})  "
@@ -277,15 +281,14 @@ class SimBridge:
             self._loop_headless(steps_total, speed)
             return
 
-        print(f"\n{BOLD}SimBridge viewer{RESET}  "
-              f"(feche a janela para encerrar)\n")
+        print(f"\n{BOLD}SimBridge viewer{RESET}  (feche a janela para encerrar)\n")
 
         step    = 0
         t_wall0 = time.perf_counter()
 
         with mjv.launch_passive(self.m, self.d) as v:
-            v.cam.distance  = 14.0
-            v.cam.elevation = -25.0
+            v.cam.distance  = 18.0
+            v.cam.elevation = -30.0
 
             while v.is_running():
                 if steps_total is not None and step >= steps_total:
@@ -306,7 +309,6 @@ class SimBridge:
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 def _quat_to_yaw(q: np.ndarray) -> float:
-    """MuJoCo quaternion (w, x, y, z) → yaw angle (rad)."""
     w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
@@ -315,20 +317,26 @@ def _quat_to_yaw(q: np.ndarray) -> float:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="SimBridge — MuJoCo + StandaloneAgent (Fase 2)"
+        description="SimBridge — MuJoCo 3v3 (6 robots)"
     )
-    parser.add_argument("--viewer",   action="store_true",
-                        help="Abre o viewer interativo MuJoCo")
-    parser.add_argument("--duration", type=float, default=30.0,
-                        help="Segundos de simulação (0 = infinito)  [default: 30]")
-    parser.add_argument("--speed",    type=float, default=1.0,
-                        help="Fator de velocidade real (0 = máximo)  [default: 1.0]")
+    parser.add_argument("--viewer",   action="store_true")
+    parser.add_argument("--duration", type=float, default=30.0)
+    parser.add_argument("--speed",    type=float, default=1.0)
     args = parser.parse_args()
 
-    print(f"\n{BOLD}T1 Soccer Sim — Fase 2: SimBridge{RESET}")
+    print(f"\n{BOLD}T1 Soccer Sim — 3v3{RESET}")
 
-    agent  = StandaloneAgent(robot_name="T1_1")
-    bridge = SimBridge(agents=[agent])
+    # Robot 1 (idx 0): agente controlado / ROS2 — os demais são DefaultAgents
+    agents = [
+        StandaloneAgent(robot_name="T1_1"),   # único robô não-default
+        DefaultAgent(robot_name="T1_3"),
+        DefaultAgent(robot_name="T1_5"),
+        DefaultAgent(robot_name="T1_2"),
+        DefaultAgent(robot_name="T1_4"),
+        DefaultAgent(robot_name="T1_6"),
+    ]
+
+    bridge = SimBridge(agents=agents)
     bridge.run(duration=args.duration, viewer=args.viewer, speed=args.speed)
 
 

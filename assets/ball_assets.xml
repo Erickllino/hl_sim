@@ -1,0 +1,5 @@
+<assets>
+  <texture name="ball_tex" type="2d" builtin="checker" width="128" height="128"
+           rgb1="0.95 0.45 0.05" rgb2="0.05 0.05 0.05"/>
+  <material name="ball_mat" texture="ball_tex" texrepeat="2 2" reflectance="0.1"/>
+</assets>
