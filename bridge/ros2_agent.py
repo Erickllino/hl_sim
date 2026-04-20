@@ -36,9 +36,14 @@ from geometry_msgs.msg import Pose
 from bridge.agent_interface import AgentInterface, ActionCmd, SensorState
 
 # ── LocoApiTopicReq api_ids ────────────────────────────────────────────────────
-KMOVE        = 2001   # {vx, vy, vyaw}
-KROTATE_HEAD = 2004   # {yaw, pitch}
-KSHOOT       = 2024   # {} — one-shot
+KMOVE           = 2001   # {vx, vy, vyaw}
+KROTATE_HEAD    = 2004   # {yaw, pitch}
+KGET_UP         = 2008   # {} — get up from fallen
+KSHOOT          = 2024   # {} — one-shot
+KHIGH_KICK      = 100001 # {} — high kick
+KROBOCUP_WALK   = 100008 # {} — enable robocup walk mode
+KRL_KICK        = 100011 # {kick_speed, kick_dir, cancel}
+KRL_FANCY_KICK  = 100012 # {kick_speed, kick_dir, cancel}
 
 # ── índices das juntas no qpos/qvel (de sim_bridge.py) ────────────────────────
 # qpos[0:7]   = ball free-joint (x y z qw qx qy qz)
@@ -81,8 +86,8 @@ class ROS2Agent(AgentInterface):
         bridge.run(viewer=True)
     """
 
-    def __init__(self, robot_name: str, node: Node, player_id: int = 1) -> None:
-        super().__init__(robot_name)
+    def __init__(self, robot_name: str, node: Node, player_id: int = 1, team_id: int = 0) -> None:
+        super().__init__(robot_name, team_id=team_id)
         self._node       = node
         self._cmd        = ActionCmd()
         self._lock       = threading.Lock()
@@ -115,6 +120,7 @@ class ROS2Agent(AgentInterface):
             self._cmd        = ActionCmd()
             self._joint_pos  = None
             self._game_state = GC_INITIAL
+            # TODO: Volta para posição incial
 
     def step(self, state: SensorState) -> ActionCmd:
         self._publish_sensors(state)
@@ -151,8 +157,12 @@ class ROS2Agent(AgentInterface):
             elif api_id == KROTATE_HEAD:
                 self._cmd.head_yaw   = float(body.get('yaw',   0.0))
                 self._cmd.head_pitch = float(body.get('pitch', 0.0))
-            elif api_id == KSHOOT:
+            elif api_id in (KSHOOT, KHIGH_KICK, KRL_KICK, KRL_FANCY_KICK):
                 self._cmd.shoot = True
+            elif api_id == KGET_UP:
+                pass  # kinematic sim never falls — no action needed
+            elif api_id == KROBOCUP_WALK:
+                pass  # walk is always active via /rl_move in sim
 
     def _on_joint_ctrl(self, msg: LowCmd) -> None:
         cmds = msg.motor_cmd
@@ -219,10 +229,20 @@ class ROS2Agent(AgentInterface):
         det = DetectedObject()
         det.label      = 'Ball'
         det.confidence = 100.0
-        # brain reads position_projection[0] and [1] for x,y in robot frame
-        # use plain Python lists — ROS2 serializes float32[] correctly from list
         det.position_projection = [float(ball_rel[0]), float(ball_rel[1]), float(ball_rel[2])]
         det.position            = [float(ball_rel[0]), float(ball_rel[1]), float(ball_rel[2])]
+
+        # projeta posição 3D para pixel para o brain usar no CamTrackBall
+        with self._lock:
+            head_yaw   = self._cmd.head_yaw
+            head_pitch = self._cmd.head_pitch
+        u, v = _ball_to_pixel(ball_rel, head_yaw, head_pitch)
+        half = 20
+        det.xmin = int(u - half)
+        det.xmax = int(u + half)
+        det.ymin = int(v - half)
+        det.ymax = int(v + half)
+
         msg.detected_objects.append(det)
 
         # brain's detectProcessVisionBox reads corner_pos as 5 corners × 2 coords (10 floats)
@@ -252,16 +272,7 @@ class ROS2Agent(AgentInterface):
         msg.orientation.z = math.sin(h)
         self._pub_head.publish(msg)
 
-    def _publish_game_controller(self) -> None:
-        msg = GameControlData()
-        with self._lock:
-            msg.state = self._game_state  # campo correto: state (não game_state)
-        msg.secondary_state = 0
-        self._pub_gc.publish(msg)
 
-    def set_game_state(self, state: int) -> None:
-        with self._lock:
-            self._game_state = state
 
 
 # ── helpers de geometria ───────────────────────────────────────────────────────
@@ -300,3 +311,49 @@ def _world_to_robot_frame(
     dz  = point_world[2] - robot_pos[2]
     c, s = math.cos(-yaw), math.sin(-yaw)
     return np.array([c * dx - s * dy, s * dx + c * dy, dz], dtype=np.float64)
+
+
+def _ball_to_pixel(
+    ball_robot: np.ndarray,
+    head_yaw: float,
+    head_pitch: float,
+) -> tuple:
+    """
+    Projeta bola (frame robô) para pixel (u, v) considerando rotação da cabeça e câmera.
+
+    Câmera intrínseca do brain config:
+        fx=fy=260.66, cx=325.6, cy=182.0 (imagem 640×380)
+
+    camToHead (do brain debug):
+        [[ 0.015, -0.034,  0.999],
+         [-1.000,  0.002,  0.015],
+         [-0.003, -0.999, -0.034]]
+    headToCam = camToHead^T
+    """
+    bx, by, bz = float(ball_robot[0]), float(ball_robot[1]), float(ball_robot[2])
+
+    # 1. Robô → frame da cabeça: desfaz yaw (rotação em torno de z)
+    cy, sy = math.cos(head_yaw), math.sin(head_yaw)
+    bx_h =  bx * cy + by * sy
+    by_h = -bx * sy + by * cy
+    bz_h =  bz
+
+    # 2. Desfaz pitch (rotação em torno do eixo y da cabeça; positivo = olhar para baixo)
+    cp, sp = math.cos(head_pitch), math.sin(head_pitch)
+    bx_h2 =  bx_h * cp - bz_h * sp
+    by_h2 =  by_h
+    bz_h2 =  bx_h * sp + bz_h * cp
+
+    # 3. Frame da cabeça → frame da câmera: aplica headToCam = camToHead^T
+    X_c =  0.015 * bx_h2 - 1.000 * by_h2 - 0.003 * bz_h2
+    Y_c = -0.034 * bx_h2 + 0.002 * by_h2 - 0.999 * bz_h2
+    Z_c =  0.999 * bx_h2 + 0.015 * by_h2 - 0.034 * bz_h2
+
+    if Z_c <= 0.01:
+        return 325.6, 182.0  # bola atrás da câmera — retorna centro
+
+    # 4. Projeção perspectiva
+    fx, fy, cx, cy_img = 260.66, 260.66, 325.6, 182.0
+    u = fx * X_c / Z_c + cx
+    v = fy * Y_c / Z_c + cy_img
+    return u, v

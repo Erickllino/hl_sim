@@ -4,7 +4,15 @@ import numpy as np
 
 from enum import Enum, auto
 
+GC_INITIAL  = 0
+GC_READY    = 1
+GC_SET      = 2
+GC_PLAYING  = 3
+
+
 class _Phase(Enum):
+    STOP    = auto()   # not used, but could be for pre-game or post-goal pause
+    RESTART = auto()   # not used, but could be for auto-restart after goal
     SEEK     = auto()   # turn in place to locate ball
     ALIGN    = auto()   # rotate to face ball
     APPROACH = auto()   # walk toward ball
@@ -32,14 +40,16 @@ class DefaultAgent(AgentInterface):
 
     def __init__(self, robot_name: str = "robot") -> None:
         super().__init__(robot_name)
-        self._phase      = _Phase.SEEK
+        self._game_state = GC_INITIAL
+        self._phase      = _Phase.STOP
         self._kick_held  = 0
 
     # ── episode reset ──────────────────────────────────────────────────────────
 
     def reset(self) -> None:
-        self._phase     = _Phase.SEEK
+        self._phase     = _Phase.STOP
         self._kick_held = 0
+        # TODO: Volta para posição incial
 
     # ── geometry helpers ───────────────────────────────────────────────────────
 
@@ -98,5 +108,10 @@ class DefaultAgent(AgentInterface):
             if self._kick_held >= self.KICK_TICKS:
                 self._phase     = _Phase.SEEK
                 self._kick_held = 0
+
+        if self._phase == _Phase.STOP:
+            pass  # do nothing
+
+        
 
         return cmd

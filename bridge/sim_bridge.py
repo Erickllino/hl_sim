@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from bridge.default_agent import DefaultAgent
+
 import numpy as np
 
 try:
@@ -39,7 +39,9 @@ except ImportError:
     print("ERRO: mujoco não instalado.  Execute: uv sync")
     sys.exit(1)
 
-from bridge.agent_interface import AgentInterface, ActionCmd, SensorState, StandaloneAgent
+from bridge.agent_interface import AgentInterface, ActionCmd, SensorState
+from bridge.default_agent import DefaultAgent
+from bridge.ros2_agent import ROS2Agent
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 SCENE_PATH = Path(__file__).parent.parent / "scenes" / "soccer_scene.xml"
@@ -171,6 +173,7 @@ class SimBridge:
         dofadr     = TRUNK_DOF_ADRS[i]
         trunk_id   = TRUNK_BODY_IDS[i]
 
+        print(f"Agent {i} joint_pos: {cmd.joint_pos}")
         if cmd.joint_pos is not None:
             ctrl = HOME_CTRL.copy()
             ctrl[0] = cmd.head_yaw
@@ -326,14 +329,14 @@ def main() -> None:
 
     print(f"\n{BOLD}T1 Soccer Sim — 3v3{RESET}")
 
-    # Robot 1 (idx 0): agente controlado / ROS2 — os demais são DefaultAgents
     agents = [
-        StandaloneAgent(robot_name="T1_1"),   # único robô não-default
+        ROS2Agent(robot_name="T1_0"),  # brain-controlled
+        DefaultAgent(robot_name="T1_1"),
         DefaultAgent(robot_name="T1_3"),
         DefaultAgent(robot_name="T1_5"),
         DefaultAgent(robot_name="T1_2"),
         DefaultAgent(robot_name="T1_4"),
-        DefaultAgent(robot_name="T1_6"),
+        DefaultAgent(robot_name="T1_5"),
     ]
 
     bridge = SimBridge(agents=agents)

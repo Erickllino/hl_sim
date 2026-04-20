@@ -33,13 +33,20 @@ def main() -> None:
     rclpy.init()
     node = Node("hl_sim_bridge")
 
-    agent1 = ROS2Agent("T1_1", node, player_id=1)   # brain-controlled
-    agent2 = DefaultAgent("T1_2")                 # scripted opponent
+    agent0 = ROS2Agent("T1_0", node, player_id=1, team_id=42)   # brain-controlled
+    agent1 = DefaultAgent("T1_1")  
+    agent2 = DefaultAgent("T1_2")
+    agent3 = DefaultAgent("T1_3")
+    agent4 = DefaultAgent("T1_4")
+    agent5 = DefaultAgent("T1_5")
+    df_agents = [agent1, agent2, agent3, agent4, agent5]   # scripted opponent
 
-    bridge = SimBridge(agents=[agent1, agent2])
+    bridge = SimBridge(agents=[agent0, agent1, agent2, agent3, agent4, agent5])
 
     # seta PLAYING antes de iniciar para o brain não travar em INITIAL
-    agent1.set_game_state(GC_PLAYING)
+    agent0.set_game_state(GC_PLAYING)
+    for agent in df_agents:
+        agent.set_game_state(GC_PLAYING)
 
     # ROS2 spin em background para que os callbacks funcionem enquanto o sim roda
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
