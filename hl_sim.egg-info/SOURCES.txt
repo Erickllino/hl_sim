@@ -1,6 +1,7 @@
 pyproject.toml
 bridge/__init__.py
 bridge/agent_interface.py
+bridge/default_agent.py
 bridge/ros2_agent.py
 bridge/sim_bridge.py
 hl_sim.egg-info/PKG-INFO

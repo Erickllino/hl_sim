@@ -2,7 +2,7 @@
 bridge/sim_bridge.py — MuJoCo simulation bridge (3v3, 6 robots)
 
 Kinematic locomotion:
-  • Joint positions held at HOME_CTRL (static standing pose).
+  • Joint positions animated by a sinusoidal CPG gait based on velocity commands.
   • Trunk free-joint integrated each control tick from agent velocity commands.
   • Trunk z fixed at TRUNK_HEIGHT — no fall physics in base (no locomotion policy).
   • Shoot command applies a brief xfrc_applied impulse on the ball.
@@ -41,7 +41,6 @@ except ImportError:
 
 from bridge.agent_interface import AgentInterface, ActionCmd, SensorState
 from bridge.default_agent import DefaultAgent
-from bridge.ros2_agent import ROS2Agent
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 SCENE_PATH = Path(__file__).parent.parent / "scenes" / "soccer_scene.xml"
@@ -55,7 +54,7 @@ STEPS_PER_CTRL  = SIM_HZ // CONTROL_HZ   # = 4
 BALL_BODY_ID            = 3
 NUM_ACTUATORS_PER_ROBOT = 23
 SENSOR_BLOCK            = 7   # framequat(4) + gyro(3) per robot
-TRUNK_HEIGHT            = 0.75
+TRUNK_HEIGHT            = 0.679   # matches keyframe home pose
 
 # ── per-robot layout (6 robots in scene order: 1,3,5,2,4,6) ───────────────────
 #
@@ -88,6 +87,53 @@ HOME_CTRL = np.array([
    -0.2,  0.0,  0.0,  0.4, -0.2, 0.0, # L leg
    -0.2,  0.0,  0.0,  0.4, -0.2, 0.0, # R leg
 ], dtype=np.float64)
+
+# ── CPG gait parameters ────────────────────────────────────────────────────────
+_GAIT_FREQ   = 1.8   # Hz — steps per second per leg
+
+# Actuator indices in ctrl array (per robot, offset = i * NUM_ACTUATORS_PER_ROBOT):
+# 0  AAHead_yaw       1  Head_pitch
+# 2  L_Shoulder_Pitch 3  L_Shoulder_Roll  4  L_Elbow_Pitch  5  L_Elbow_Yaw
+# 6  R_Shoulder_Pitch 7  R_Shoulder_Roll  8  R_Elbow_Pitch  9  R_Elbow_Yaw
+# 10 Waist
+# 11 L_Hip_Pitch     12 L_Hip_Roll       13 L_Hip_Yaw      14 L_Knee_Pitch
+# 15 L_Ankle_Pitch   16 L_Ankle_Roll
+# 17 R_Hip_Pitch     18 R_Hip_Roll       19 R_Hip_Yaw      20 R_Knee_Pitch
+# 21 R_Ankle_Pitch   22 R_Ankle_Roll
+
+
+def _gait_ctrl(cmd: ActionCmd, tick: int) -> np.ndarray:
+    """Sinusoidal CPG gait — returns 23-element ctrl array."""
+    ctrl = HOME_CTRL.copy()
+
+    speed  = math.hypot(cmd.vx, cmd.vy)
+    motion = min(1.0, (speed + abs(cmd.vyaw) * 0.25) * 3.5)
+    if motion < 0.05:
+        return ctrl  # standing still
+
+    phase = 2.0 * math.pi * _GAIT_FREQ * tick / CONTROL_HZ
+
+    STRIDE = 0.28 * motion   # hip pitch swing (rad)
+    LIFT   = 0.22 * motion   # extra knee flex during swing (rad)
+    ANKLE  = 0.10 * motion   # ankle push-off (rad)
+    ARM    = 0.14 * motion   # shoulder swing (rad)
+
+    # (phase_offset, hip_pitch_i, hip_roll_i, knee_i, ankle_i, arm_pitch_i)
+    legs = (
+        (0.0,      11, 12, 14, 15, 2),   # left  leg / left  arm
+        (math.pi,  17, 18, 20, 21, 6),   # right leg / right arm
+    )
+    for ph_off, hip_i, roll_i, knee_i, ankle_i, arm_i in legs:
+        ph      = phase + ph_off
+        sin_ph  = math.sin(ph)
+
+        ctrl[hip_i]   = HOME_CTRL[hip_i]   + STRIDE * sin_ph
+        ctrl[knee_i]  = HOME_CTRL[knee_i]  + LIFT   * max(0.0, -sin_ph)  # flex on swing
+        ctrl[ankle_i] = HOME_CTRL[ankle_i] + ANKLE  * sin_ph
+        ctrl[arm_i]   = HOME_CTRL[arm_i]   - ARM    * sin_ph   # arms swing opposite
+
+    return ctrl
+
 
 # ── terminal helpers ───────────────────────────────────────────────────────────
 BOLD = "\033[1m";  CYAN = "\033[96m";  GREEN = "\033[92m"
@@ -173,8 +219,8 @@ class SimBridge:
         dofadr     = TRUNK_DOF_ADRS[i]
         trunk_id   = TRUNK_BODY_IDS[i]
 
-        print(f"Agent {i} joint_pos: {cmd.joint_pos}")
         if cmd.joint_pos is not None:
+            # ROS2/deploy mode: use explicit joint targets from /joint_ctrl
             ctrl = HOME_CTRL.copy()
             ctrl[0] = cmd.head_yaw
             ctrl[1] = cmd.head_pitch
@@ -182,6 +228,7 @@ class SimBridge:
             ctrl[2: 2 + n] = cmd.joint_pos[:n]
             self.d.ctrl[ctrl_start: ctrl_start + NUM_ACTUATORS_PER_ROBOT] = ctrl
         else:
+            # Kinematic mode: integrate trunk pose, animate joints via CPG gait
             c, s    = math.cos(ks.yaw), math.sin(ks.yaw)
             ks.x   += (cmd.vx * c - cmd.vy * s) * dt
             ks.y   += (cmd.vx * s + cmd.vy * c) * dt
@@ -198,7 +245,7 @@ class SimBridge:
             self.d.qpos[qposadr + 6] = math.sin(h)
             self.d.qvel[dofadr: dofadr + 6] = 0.0
 
-            ctrl = HOME_CTRL.copy()
+            ctrl = _gait_ctrl(cmd, self._tick)
             ctrl[0] = cmd.head_yaw
             ctrl[1] = cmd.head_pitch
             self.d.ctrl[ctrl_start: ctrl_start + NUM_ACTUATORS_PER_ROBOT] = ctrl
@@ -320,7 +367,7 @@ def _quat_to_yaw(q: np.ndarray) -> float:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="SimBridge — MuJoCo 3v3 (6 robots)"
+        description="SimBridge — MuJoCo 3v3 (6 robots, standalone)"
     )
     parser.add_argument("--viewer",   action="store_true")
     parser.add_argument("--duration", type=float, default=30.0)
@@ -330,11 +377,10 @@ def main() -> None:
     print(f"\n{BOLD}T1 Soccer Sim — 3v3{RESET}")
 
     agents = [
-        ROS2Agent(robot_name="T1_0"),  # brain-controlled
+        DefaultAgent(robot_name="T1_0"),
         DefaultAgent(robot_name="T1_1"),
-        DefaultAgent(robot_name="T1_3"),
-        DefaultAgent(robot_name="T1_5"),
         DefaultAgent(robot_name="T1_2"),
+        DefaultAgent(robot_name="T1_3"),
         DefaultAgent(robot_name="T1_4"),
         DefaultAgent(robot_name="T1_5"),
     ]

@@ -11,7 +11,6 @@ import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import threading
-from game_controller_interface.msg import GameControlData
 from typing import Optional
 
 import numpy as np

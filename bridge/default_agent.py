@@ -47,7 +47,7 @@ class DefaultAgent(AgentInterface):
     # ── episode reset ──────────────────────────────────────────────────────────
 
     def reset(self) -> None:
-        self._phase     = _Phase.STOP
+        self._phase     = _Phase.SEEK
         self._kick_held = 0
         # TODO: Volta para posição incial
 
