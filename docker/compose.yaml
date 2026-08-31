@@ -1,0 +1,166 @@
+# ==============================================================================
+#  hl_sim — 6 containers de robô + 1 de simulação, na bridge hl_net.
+#
+#  Antes do primeiro `up`:
+#      python tools/gen_robot_configs.py      # gera config/robots/*.yaml
+#      xhost +local:docker                    # só se for usar o viewer
+#
+#  Subir só os robôs que você quer (N ≤ 6):
+#      docker compose -f docker/compose.yaml up sim robot1 robot2      # 1v1
+#      docker compose -f docker/compose.yaml up sim robot1 robot3 robot5
+#      docker compose -f docker/compose.yaml up                        # 3v3 completo
+#
+#  O `sim` decide sozinho quem tem brain: HL_BRAINS lista os robôs com ROS2;
+#  os corpos restantes ficam com ScriptedAgent, e a cena continua com os 6.
+#
+#  O GameController oficial NÃO está aqui: é um app Tauri nativo, rodado no host,
+#  como o notebook do árbitro na competição.  Ver o serviço `gc-relay` abaixo se
+#  o broadcast dele não estiver chegando na bridge.
+# ==============================================================================
+
+name: hl-sim
+
+x-robot-build: &robot-build
+  context: ..
+  dockerfile: docker/Dockerfile
+  target: robot
+  ssh: ["default"]          # clone do hsl-player com a sua chave, sem gravá-la na imagem
+  args:
+    HSL_REF: competition-alan
+    # Candidato nº 1 a quebrar o build: o hsl-player não pina a versão do Rerun.
+    RERUN_VERSION: "0.36.3"
+    UID: "${UID:-1000}"
+    GID: "${GID:-1000}"
+
+x-robot: &robot
+  image: hl-robot:humble
+  build: *robot-build
+  networks: [hl_net]
+  restart: unless-stopped
+  stop_grace_period: 5s
+  # A imagem já traz o brain buildado; monte o clone local por cima só quando
+  # estiver mexendo no próprio brain (aí é preciso rebuildar dentro do container).
+  # volumes:
+  #   - ${HOME}/Documents/hsl-player:/home/booster/Workspace/hsl-player
+
+services:
+
+  # ── time 56 (casa) ─────────────────────────────────────────────────────────
+  robot1:
+    <<: *robot
+    container_name: hl-robot1
+    hostname: robot1
+    environment: [ROS_DOMAIN_ID=1]
+    volumes: ["../config/robots/robot1.yaml:/etc/hl/config_local.yaml:ro"]
+    networks: {hl_net: {ipv4_address: 172.28.0.11}}
+
+  robot3:
+    <<: *robot
+    container_name: hl-robot3
+    hostname: robot3
+    environment: [ROS_DOMAIN_ID=3]
+    volumes: ["../config/robots/robot3.yaml:/etc/hl/config_local.yaml:ro"]
+    networks: {hl_net: {ipv4_address: 172.28.0.13}}
+
+  robot5:
+    <<: *robot
+    container_name: hl-robot5
+    hostname: robot5
+    environment: [ROS_DOMAIN_ID=5]
+    volumes: ["../config/robots/robot5.yaml:/etc/hl/config_local.yaml:ro"]
+    networks: {hl_net: {ipv4_address: 172.28.0.15}}
+
+  # ── time 57 (visitante) ────────────────────────────────────────────────────
+  robot2:
+    <<: *robot
+    container_name: hl-robot2
+    hostname: robot2
+    environment: [ROS_DOMAIN_ID=2]
+    volumes: ["../config/robots/robot2.yaml:/etc/hl/config_local.yaml:ro"]
+    networks: {hl_net: {ipv4_address: 172.28.0.12}}
+
+  robot4:
+    <<: *robot
+    container_name: hl-robot4
+    hostname: robot4
+    environment: [ROS_DOMAIN_ID=4]
+    volumes: ["../config/robots/robot4.yaml:/etc/hl/config_local.yaml:ro"]
+    networks: {hl_net: {ipv4_address: 172.28.0.14}}
+
+  robot6:
+    <<: *robot
+    container_name: hl-robot6
+    hostname: robot6
+    environment: [ROS_DOMAIN_ID=6]
+    volumes: ["../config/robots/robot6.yaml:/etc/hl/config_local.yaml:ro"]
+    networks: {hl_net: {ipv4_address: 172.28.0.16}}
+
+  # ── simulador ──────────────────────────────────────────────────────────────
+  sim:
+    image: hl-sim:humble
+    container_name: hl-sim
+    hostname: sim
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: sim
+      ssh: ["default"]
+      args:
+        HSL_REF: competition-alan
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+    networks: {hl_net: {ipv4_address: 172.28.0.10}}
+    # O código do sim é montado: editar em src/hl_sim/ e reiniciar o container
+    # basta, sem rebuild de imagem.
+    volumes:
+      - ..:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      DISPLAY: "${DISPLAY:-:0}"
+      MUJOCO_GL: glfw
+      HL_BRAINS: "${HL_BRAINS:-all}"
+    # /dev/dri dá aceleração por hardware onde o driver expõe DRI.  Com a NVIDIA
+    # proprietária isso não basta: instale o nvidia-container-toolkit no host e
+    # troque este bloco pelo `deploy.resources.devices` comentado abaixo.  Sem
+    # nenhum dos dois o viewer roda em software (llvmpipe) — funciona, mas lento.
+    devices:
+      - /dev/dri:/dev/dri
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, graphics, display]
+    command: ["python", "-m", "hl_sim.cli.run_ros2", "--brains", "${HL_BRAINS:-all}", "--viewer"]
+    stop_grace_period: 5s
+
+  # ── relay do broadcast do árbitro (opcional) ───────────────────────────────
+  # Um broadcast para 255.255.255.255 sai pela interface da rota padrão, e a
+  # bridge do Docker não é ela — então o pacote do GameController pode não chegar
+  # nos containers.  Primeiro tente apontar o endereço de broadcast do próprio
+  # GameController para 172.28.255.255.  Se o app não permitir, suba isto:
+  #
+  #     docker compose -f docker/compose.yaml --profile relay up gc-relay
+  #
+  # Ele escuta a 3838 na rede do host e reemite os bytes crus, sem tocar neles,
+  # na subnet da hl_net.  Precisa de network_mode: host para ver o broadcast
+  # original, e por isso fala com a bridge pelo endereço, não pela rede.
+  gc-relay:
+    image: hl-sim:humble
+    container_name: hl-gc-relay
+    profiles: [relay]
+    network_mode: host
+    volumes: ["..:/workspace"]
+    command:
+      ["python", "-m", "hl_sim.cli.gc_relay", "--subnet", "172.28.0.0/16"]
+    restart: unless-stopped
+
+networks:
+  hl_net:
+    name: hl_net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

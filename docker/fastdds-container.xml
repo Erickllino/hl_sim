@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Perfil FastDDS dos containers.
+
+  Substitui o configs/fastdds.xml do hsl-player, que restringe o transporte a
+  127.0.0.1 e aos IPs internos do robô real (192.168.10.101/102) — dentro do
+  container aquele whitelist bloquearia a bridge hl_net, e o sim nunca acharia
+  o brain.
+
+  Aqui não há interfaceWhiteList: o isolamento entre robôs é feito por
+  ROS_DOMAIN_ID (portas 7400 + 250·domínio), não por interface.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+    <transport_descriptors>
+        <transport_descriptor>
+            <transport_id>UdpTransport</transport_id>
+            <type>UDPv4</type>
+        </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="udp_transport_profile" is_default_profile="true">
+        <rtps>
+            <userTransports>
+                <transport_id>UdpTransport</transport_id>
+            </userTransports>
+            <useBuiltinTransports>false</useBuiltinTransports>
+        </rtps>
+    </participant>
+</profiles>

@@ -6,23 +6,31 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hl-sim"
 version = "0.1.0"
-description = "Simulador MuJoCo para futebol de robô humanoide T1"
+description = "Simulador MuJoCo para futebol de robô humanoide T1 (RoboCup Humanoid League)"
 requires-python = ">=3.10,<3.11"
 dependencies = [
     "mujoco>=3.0.0",
-    "numpy>=2.0.0",
+    # numpy fica permissivo de propósito: dentro do container o venv usa
+    # --system-site-packages e reaproveita o numpy do ROS2 Humble (1.x), contra
+    # o qual rclpy e cv_bridge foram compilados.  Forçar numpy>=2 ali quebra a
+    # ABI dessas extensões.
+    "numpy>=1.24,<3",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-# Fase 2+: locomotion policy (torch já presente no hl_unification venv)
+# Fase 2+: locomotion policy / RNN de marcha
 locomotion = [
     "torch>=2.11.0",
 ]
 
 [project.scripts]
-test-scene  = "scripts.test_scene:main"
-sim-bridge  = "bridge.sim_bridge:main"
-sim-ros2    = "scripts.run_ros2:main"
+test-scene = "hl_sim.cli.test_scene:main"
+sim-bridge = "hl_sim.sim.bridge:main"
+sim-ros2   = "hl_sim.cli.run_ros2:main"
+gc-sniffer = "hl_sim.cli.gc_sniffer:main"
+gc-relay   = "hl_sim.cli.gc_relay:main"
 
 [tool.setuptools.packages.find]
-include = ["scripts*", "bridge*"]
+where   = ["src"]
+include = ["hl_sim*"]

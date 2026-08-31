@@ -1,0 +1,16 @@
+# ambiente
+.venv/
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# mujoco
+MUJOCO_LOG.TXT
+
+# gerados por robô a partir de config/match.yaml
+config/robots/

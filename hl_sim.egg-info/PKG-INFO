@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: hl-sim
-Version: 0.1.0
-Summary: Simulador MuJoCo para futebol de robô humanoide T1
-Requires-Python: <3.11,>=3.10
-Requires-Dist: mujoco>=3.0.0
-Requires-Dist: numpy>=2.0.0
-Provides-Extra: locomotion
-Requires-Dist: torch>=2.11.0; extra == "locomotion"

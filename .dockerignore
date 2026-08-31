@@ -1,0 +1,15 @@
+# O contexto de build vai só para a imagem do sim; nada disto precisa entrar.
+.git
+.venv
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+MUJOCO_LOG.TXT
+.env
+docs
+config/robots
+# Se algum dia o hsl-player for vendorado aqui, os artefatos de build dele
+# (que o repo versiona) não podem entrar no contexto.
+external/*/build
+external/*/install
+external/*/log
