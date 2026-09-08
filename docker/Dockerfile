@@ -71,8 +71,8 @@ ENV HSL_DIR=/home/booster/Workspace/hsl-player
 # ─────────────────────────────────────────────────────────────── fetch ───────
 FROM base AS fetch
 
-ARG HSL_REPO=git@github.com:robocin/hsl-player.git
-ARG HSL_REF=competition-alan
+ARG HSL_REPO=git@github.com:BoosterRobotics/robocup_demo.git
+ARG HSL_REF=sandbox/support_2026_game_controller
 
 RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts
 

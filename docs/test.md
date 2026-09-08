@@ -1,4 +1,72 @@
-❯ Há algumas mudançãs na nossa ideia, primeiro, nao estamos mais usando o hl_unification, somente o robocup_demo (hsl-player), O game controller tambem mudou, entao temos que fazer essas mudanças. Tivemos a ideia de fazer um "emulador" do firmware, pegar dados do robo real e fazer modelos RNN que fariam a marcha do robo
+HLRoboSim
+
+- src
+  - assets
+  - scenes
+  - config
+    - match.yaml
+    - generated
+  - sim
+    - world
+      - model.py
+      - physics.py
+      - events.py
+      - referee_actions.py
+      - server.py
+    - locomotion
+      - base.py
+      - kinematic.py
+      - response_model.py
+      - learned.py
+      - kick.py
+    - link
+      - schema.py
+      - transport.py
+    - emulator
+      - firmware_node.py
+      - vision_node.py
+      - whistle_node.py
+      - models
+        - odometry.py
+        - camera.py
+        - latency.py
+      - launch
+        - emulator.launch.py
+    - protocol
+      - gamecontroller.py
+      - team_message.py
+    - agent
+     - base.py   # Base robot used in all agents
+     - zombie.py  # Just follow the ball
+     - player.py # Uses the brain script
+    - referee
+      - whistle.py
+      - ball.py
+      - pickup.py
+      - gc_sniffer.py
+      - gc_relay.py
+      - team_monitor.py
+      - auto_gc.py
+    - config.py
+    - cli
+      - run_world
+      - run_emulator
+      - run_match
+      - gen_configs
+      - referee
+- docker
+  - Dockerfile
+  - compose.yaml
+  - launch
+    - robot.launch.py
+  - fastdds
+- tools
+- tests
+  - test_protocol_gc.py
+  - test_msg_contract.py
+  - scenarios
+- docs
 
 
-Quero que entenda bem qual o meu objetivo com esse projeto, lembre na memoria: Eu quero que a simulação se aproxime o maximo da situação de competição (Comunicação dos roboos com o arbitro, gamecoontroler e etc).
+
+https://tree.nathanfriend.com/
