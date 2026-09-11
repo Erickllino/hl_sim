@@ -1,0 +1,7 @@
+# Chute por força sem contato robô–bola. Distância a partir do tronco.
+kick:
+  force_newtons: 10.0
+  duration_seconds: 0.1
+  distance_m: 0.45
+  max_angle_degrees: 60.0
+  max_ball_height_m: 0.3

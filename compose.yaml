@@ -1,0 +1,15 @@
+# ==============================================================================
+#  compose.yaml — ponteiro para docker/compose.yaml.
+#
+#  Existe só para você poder rodar da raiz do repositório sem -f:
+#
+#      docker compose up sim robot1
+#      docker compose build
+#
+#  Os caminhos relativos dentro do arquivo incluído continuam sendo resolvidos
+#  a partir de docker/, então `context: ..` e os volumes seguem corretos.
+# ==============================================================================
+name: hl-sim
+
+include:
+  - docker/compose.yaml

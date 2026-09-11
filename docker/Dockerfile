@@ -10,16 +10,15 @@
 #  objetivo do projeto estaria perdida.  O caminho do workspace é o mesmo do robô
 #  real — /home/booster/Workspace/hsl-player — para os logs e paths baterem.
 #
-#  Build (BuildKit obrigatório; o clone usa a sua chave SSH, que nunca entra numa
-#  camada da imagem):
+#  O contexto nomeado `hsl` usa robocin/hsl-player@main26 por padrão.
+#  BuildKit clona o repositório; HSL_PLAYER_DIR permite um clone local.
+#  O patch versionado de kick_intent publica a intenção do Kick normal.
+#
+#  Build:
 #      docker compose -f docker/compose.yaml build
-#  ou, à mão:
-#      DOCKER_BUILDKIT=1 docker build --ssh default \
-#          -f docker/Dockerfile --target robot -t hl-robot:humble .
 #
 #  Estágios:
 #      base   ROS2 Humble + usuário booster + perfil FastDDS
-#      fetch  clone do hsl-player, sem os artefatos de build versionados
 #      msgs   colcon build só das 4 interfaces        (compartilhado)
 #        ├─ sim    + uv/MuJoCo + hl_sim
 #        └─ robot  + rerun/behaviortree/OpenCV + colcon build brain e game_controller
@@ -35,7 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake git curl wget unzip ca-certificates openssh-client \
+        build-essential cmake git curl wget unzip patch ca-certificates openssh-client \
         python3-pip python3-venv python3-colcon-common-extensions \
         ros-humble-rmw-fastrtps-cpp \
         iproute2 iputils-ping net-tools tcpdump \
@@ -68,23 +67,18 @@ ENV FASTRTPS_DEFAULT_PROFILES_FILE=/etc/hl/fastdds.xml \
 
 ENV HSL_DIR=/home/booster/Workspace/hsl-player
 
-# ─────────────────────────────────────────────────────────────── fetch ───────
-FROM base AS fetch
+# Qual commit do hsl-player foi copiado.  O compose preenche com
+# HSL_COMMIT=$(git -C ~/Documents/hsl-player rev-parse --short HEAD).
+ARG HSL_COMMIT=desconhecido
+ENV HSL_COMMIT=${HSL_COMMIT}
+LABEL org.opencontainers.image.revision=${HSL_COMMIT}
 
-ARG HSL_REPO=git@github.com:robocin/hsl-player.git
-ARG HSL_REF=competition-alan
-
-RUN mkdir -p -m 0700 /root/.ssh && ssh-keyscan github.com >> /root/.ssh/known_hosts
-
-# HSL_REF entra como ARG para invalidar o cache quando o brain mudar de commit.
-RUN --mount=type=ssh \
-    git clone --depth 1 --branch "${HSL_REF}" "${HSL_REPO}" /src/hsl-player
-
-# O hsl-player versiona build/ install/ log/ — 4876 dos 5294 arquivos rastreados,
-# compilados no Jetson (arm64).  Deixar isso no workspace faz o colcon achar
-# caches do CMake com compilador e caminhos absolutos errados.
-RUN rm -rf /src/hsl-player/build /src/hsl-player/install /src/hsl-player/log \
-           /src/hsl-player/.git
+# ────────────────────────────────────────────────────────────── source ───────
+# Espelha só o src/ da fonte main26 (GitHub ou clone local).  build/, install/ e log/ ficam na raiz do
+# repo do hsl-player, então nem entram aqui.  Os estágios seguintes montam este
+# como bind e copiam pacote a pacote — nada dele vira camada da imagem final.
+FROM base AS source
+COPY --from=hsl src /hsl-src
 
 # ──────────────────────────────────────────────────────────────── msgs ───────
 # Só as 4 definições de mensagem.  É o que o sim precisa, e a base do robô.
@@ -92,11 +86,43 @@ FROM base AS msgs
 
 WORKDIR ${HSL_DIR}
 
-COPY --from=fetch --chown=booster:booster /src/hsl-player/src/booster_msgs           src/booster_msgs
-COPY --from=fetch --chown=booster:booster /src/hsl-player/src/booster_ros2_interface src/booster_ros2_interface
-COPY --from=fetch --chown=booster:booster /src/hsl-player/src/robocup_ros2_interface src/robocup_ros2_interface
+# Os pacotes são localizados pelo NOME declarado no package.xml, não pelo
+# caminho: o layout do hsl-player muda entre branches (competition-alan tem
+# src/booster_ros2_interface e src/robocup_ros2_interface; sim_stable põe as
+# quatro interfaces em src/interface/).  Nome de diretório também ≠ nome de
+# pacote — src/booster_ros2_interface declara `booster_interface`.
+#
+# O bind mount evita que os 25 MB de src/vision/thirdparty virem camada.
+RUN --mount=type=bind,from=source,source=/hsl-src,target=/hsl-src \
+    set -eux; \
+    mkdir -p src; \
+    for pkg in booster_msgs booster_interface vision_interface game_controller_interface; do \
+        f=$(grep -rl "<name>$pkg</name>" /hsl-src --include=package.xml | head -1); \
+        [ -n "$f" ] || { echo "ERRO: pacote '$pkg' não encontrado no hsl-player" >&2; exit 1; }; \
+        cp -r "$(dirname "$f")" "src/$pkg"; \
+    done; \
+    ls src
 
-# Nome do diretório ≠ nome do pacote: src/booster_ros2_interface → booster_interface.
+# Alguns branches do hsl-player (sim_stable, por ex.) não chamam
+# find_package(rosidl_default_generators) nos pacotes de mensagem da Booster.
+# Sem isso o rosidl_generate_interfaces gera só C/C++, e o sim morre com
+# "ModuleNotFoundError: No module named 'booster_msgs'" — o brain é C++ e nunca
+# sentiu falta, mas o hl_sim é Python.
+#
+# O patch é aditivo: liga o gerador Python e não toca em nenhuma definição .msg,
+# então os tipos no fio continuam idênticos aos que o brain usa.
+RUN set -eux; \
+    for pkg in booster_msgs booster_interface vision_interface game_controller_interface; do \
+        cml="src/$pkg/CMakeLists.txt"; px="src/$pkg/package.xml"; \
+        if grep -q "rosidl_generate_interfaces" "$cml" \
+           && ! grep -q "find_package(rosidl_default_generators" "$cml"; then \
+            sed -i 's|find_package(ament_cmake REQUIRED)|find_package(ament_cmake REQUIRED)\nfind_package(rosidl_default_generators REQUIRED)|' "$cml"; \
+            echo "· $pkg: bindings Python habilitadas"; \
+        fi; \
+        grep -q "rosidl_default_runtime" "$px" || \
+            sed -i 's|</package>|  <exec_depend>rosidl_default_runtime</exec_depend>\n</package>|' "$px"; \
+    done
+
 RUN . /opt/ros/humble/setup.sh \
     && colcon build --symlink-install --parallel-workers "$(nproc)" \
         --packages-select booster_msgs booster_interface \
@@ -114,15 +140,30 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ros-humble-behaviortree-cpp \
         ros-humble-backward-ros \
         ros-humble-tf2 ros-humble-tf2-ros ros-humble-tf2-geometry-msgs \
-        libeigen3-dev libopencv-dev libyaml-cpp-dev libarrow-dev \
+        libeigen3-dev libopencv-dev libyaml-cpp-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Bug de empacotamento do ros-humble-behaviortree-cpp (4.9.1): o .deb instala a
+# lib em lib/x86_64-linux-gnu/, mas o ament_cmake_export_libraries-extras.cmake
+# dele só procura em <prefix>/lib.  Sem este symlink o find_package(behaviortree_cpp)
+# do brain (CMakeLists.txt:14) falha com "exports the library 'behaviortree_cpp'
+# which couldn't be found".
+RUN set -eux; \
+    for so in /opt/ros/humble/lib/*/libbehaviortree_cpp.so*; do \
+        [ -e "$so" ] && ln -sf "$so" /opt/ros/humble/lib/; \
+    done; \
+    ls -l /opt/ros/humble/lib/libbehaviortree_cpp.so
 
 # ── Rerun C++ SDK ────────────────────────────────────────────────────────────
 # O brain faz find_package(rerun_sdk REQUIRED) (src/brain/CMakeLists.txt:16) e o
-# SDK não está no apt.  O hsl-player não pina versão em lugar nenhum, então este
-# é o candidato nº 1 a quebrar o build: se o compilador reclamar da API do Rerun,
-# mude RERUN_VERSION (docker/compose.yaml → build.args).
-ARG RERUN_VERSION=0.36.3
+# SDK não está no apt.  O hsl-player não pina versão em lugar nenhum; 0.21.0 foi
+# recuperada das imagens t1-demo e hl-unification, que compilaram este brain.
+# Não suba sem testar: a partir da 0.22 o RecordingStream perdeu connect(), que
+# brain_log.cpp:14 usa, e os archetypes mudaram (static_assert em AsComponents).
+# Sem libarrow-dev: ele não existe no jammy (é do repositório da Apache Arrow), e
+# o CMake do SDK do Rerun já baixa e compila o Arrow sozinho por padrão
+# (RERUN_DOWNLOAD_AND_BUILD_ARROW=ON).  É lento, mas não depende de repo extra.
+ARG RERUN_VERSION=0.21.0
 RUN wget -q -O /tmp/rerun.zip \
         "https://github.com/rerun-io/rerun/releases/download/${RERUN_VERSION}/rerun_cpp_sdk.zip" \
     && unzip -q /tmp/rerun.zip -d /tmp/rerun \
@@ -131,14 +172,91 @@ RUN wget -q -O /tmp/rerun.zip \
     && cmake --build /tmp/rerun/build --target install -j"$(nproc)" \
     && rm -rf /tmp/rerun /tmp/rerun.zip
 
+# ── SDK da Booster Robotics ──────────────────────────────────────────────────
+# brain.h:16 faz #include <booster/robot/b1/b1_api_const.hpp>.  Esse header não
+# está no hsl-player nem em pacote apt nenhum: vem do SDK da Booster, que no robô
+# real está instalado no sistema.  O README do upstream (BoosterRobotics/
+# robocup_demo) só diz "install latest Booster Robotics SDK", sem versão.
+#
+# O brain usa só constantes do SDK e não linka a biblioteca (o CMakeLists dele
+# não referencia nenhum lib da Booster), então bastam os headers.
+ARG BOOSTER_SDK_REF=main
+RUN git clone --depth 1 --filter=blob:none --sparse --progress \
+        --branch "${BOOSTER_SDK_REF}" \
+        https://github.com/BoosterRobotics/booster_robotics_sdk.git /tmp/bsdk \
+ && cd /tmp/bsdk && git sparse-checkout set include \
+ && cp -r /tmp/bsdk/include/booster /usr/local/include/ \
+ && rm -rf /tmp/bsdk
+
+
 WORKDIR ${HSL_DIR}
 
-COPY --from=fetch --chown=booster:booster /src/hsl-player/src/game_controller src/game_controller
-COPY --from=fetch --chown=booster:booster /src/hsl-player/src/brain           src/brain
-# Do pacote vision levamos só os YAML: o nó não sobe (precisa de PCL/ZED e
-# disputaria /booster_vision/detection com o sim), mas brain/launch/launch.py:12
-# lê vision/share/vision/config/vision.yaml na hora do launch.
-COPY --from=fetch --chown=booster:booster /src/hsl-player/src/vision/config   /tmp/vision-config
+# Mesmo esquema do estágio msgs: localizados pelo nome do pacote.
+# Do `vision` levamos só os YAML — o nó não sobe (precisa de PCL/ZED e disputaria
+# /booster_vision/detection com o sim), mas brain/launch/launch.py:12 lê
+# vision/share/vision/config/vision.yaml na hora do launch.
+RUN --mount=type=bind,from=source,source=/hsl-src,target=/hsl-src \
+    set -eux; \
+    for pkg in brain game_controller; do \
+        f=$(grep -rl "<name>$pkg</name>" /hsl-src --include=package.xml | head -1); \
+        [ -n "$f" ] || { echo "ERRO: pacote '$pkg' não encontrado" >&2; exit 1; }; \
+        cp -r "$(dirname "$f")" "src/$pkg"; \
+    done; \
+    vf=$(grep -rl "<name>vision</name>" /hsl-src --include=package.xml | head -1); \
+    mkdir -p /tmp/vision-config; \
+    cp "$(dirname "$vf")"/config/*.yaml /tmp/vision-config/; \
+    ls src /tmp/vision-config
+
+
+# ── SDK INTERNO da Booster (condicional) ─────────────────────────────────────
+# Alguns branches do hsl-player incluem <booster_internal/robot/b1/...>, que não
+# existe em repositório público nenhum — é o SDK que a Booster entrega aos times.
+# Ele entrou junto com o "RL Kick" (ago/2025) e está em competition-alan; branches
+# como sim_stable e main não usam.  Por isso a exigência é derivada do código
+# copiado, não assumida.  Ver vendor/README.md.
+#
+# Duas fontes, nesta ordem:
+#   vendor/booster_internal/       headers de verdade, copiados do robô (gitignored)
+#   vendor/booster_internal.stub/  stub versionado, só api_ids conhecidos + tipos
+# O stub existe para a imagem de SIMULAÇÃO compilar sem o SDK proprietário; ele
+# tem quatro api_ids inventados, e por isso a imagem sai marcada.
+COPY --chown=booster:booster vendor/ /tmp/vendor/
+RUN set -eu; \
+    if grep -rq "booster_internal" src/brain/ 2>/dev/null; then \
+        if [ -d /tmp/vendor/booster_internal ]; then \
+            cp -r /tmp/vendor/booster_internal /usr/local/include/; \
+            echo "· este brain usa booster_internal — headers reais, de vendor/"; \
+        elif [ -d /tmp/vendor/booster_internal.stub ]; then \
+            cp -r /tmp/vendor/booster_internal.stub /usr/local/include/booster_internal; \
+            touch /usr/local/include/booster_internal/.STUB; \
+            echo "· ATENÇÃO: booster_internal veio do STUB (vendor/booster_internal.stub/)."; \
+            echo "  Imagem válida para simulação; NÃO instale no robô real."; \
+        else \
+            echo "" >&2; \
+            echo "ERRO: este branch do brain inclui <booster_internal/...>, mas" >&2; \
+            echo "      nem vendor/booster_internal/ nem vendor/booster_internal.stub/ existem." >&2; \
+            echo "" >&2; \
+            echo "  Três saídas:" >&2; \
+            echo "  1) copiar os headers do robô real:" >&2; \
+            echo "       scp -r booster@<ip>:/usr/local/include/booster_internal vendor/" >&2; \
+            echo "  2) restaurar o stub versionado (git checkout vendor/booster_internal.stub)" >&2; \
+            echo "  3) buildar um branch que não precisa dele:" >&2; \
+            echo "       git -C ~/Documents/hsl-player worktree add ../hsl-player-sim sim_stable" >&2; \
+            echo "       HSL_PLAYER_DIR=../../hsl-player-sim docker compose ... build" >&2; \
+            echo "" >&2; \
+            echo "  Detalhes em vendor/README.md" >&2; \
+            exit 1; \
+        fi; \
+    else \
+        echo "· este brain não usa booster_internal — nada a instalar"; \
+    fi; \
+    rm -rf /tmp/vendor
+
+# O Kick normal só manda velocidade. Publicar sua intenção permite que o
+# consumidor de locomoção execute o chute sem inferi-lo de uma aproximação.
+# Patch estrito: alterações incompatíveis no upstream fazem o build falhar.
+COPY docker/patches/main26-kick-intent.patch /tmp/main26-kick-intent.patch
+RUN patch --batch --forward --fuzz=0 -p1 < /tmp/main26-kick-intent.patch
 
 RUN . /opt/ros/humble/setup.sh \
     && . ${HSL_DIR}/install/setup.sh \

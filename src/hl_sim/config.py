@@ -38,6 +38,7 @@ class MatchConfig:
     home_team_id: int
     away_team_id: int
     robots: tuple[RobotConfig, ...]
+    game_controller_ip: str = "172.28.0.1"
 
     def by_name(self, name: str) -> RobotConfig:
         for r in self.robots:
@@ -100,4 +101,5 @@ def load(path: Optional[Path] = None) -> MatchConfig:
         home_team_id=team_ids["home"],
         away_team_id=team_ids["away"],
         robots=tuple(robots),
+        game_controller_ip=str(raw.get("game_controller_ip", "172.28.0.1")),
     )

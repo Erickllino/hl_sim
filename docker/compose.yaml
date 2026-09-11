@@ -5,6 +5,9 @@
 #      python tools/gen_robot_configs.py      # gera config/robots/*.yaml
 #      xhost +local:docker                    # só se for usar o viewer
 #
+#  O brain vem de robocin/hsl-player, branch main26 (contexto Git do BuildKit).
+#  Para desenvolvimento local: export HSL_PLAYER_DIR=/caminho/para/hsl-player
+#
 #  Subir só os robôs que você quer (N ≤ 6):
 #      docker compose -f docker/compose.yaml up sim robot1 robot2      # 1v1
 #      docker compose -f docker/compose.yaml up sim robot1 robot3 robot5
@@ -24,17 +27,35 @@ x-robot-build: &robot-build
   context: ..
   dockerfile: docker/Dockerfile
   target: robot
-  ssh: ["default"]          # clone do hsl-player com a sua chave, sem gravá-la na imagem
+  # BuildKit clona main26 por padrão. HSL_PLAYER_DIR permite um clone local.
+  # O clone local também deve estar na main26 para receber o patch de intenção.
+  additional_contexts:
+    hsl: ${HSL_PLAYER_DIR:-https://github.com/robocin/hsl-player.git#main26}
+  # Ainda necessário: o download do Rerun SDK vai para o github.com, e a rota
+  # para lá sai por um túnel IPsec com MTU 1400 enquanto a bridge do Docker usa
+  # 1500.  O ICMP "fragmentation needed" se perde, os pacotes grandes somem e o
+  # download trava sem erro.  Correção global alternativa, se preferir:
+  # /etc/docker/daemon.json {"mtu": 1400} + systemctl restart docker.
+  network: host
   args:
-    HSL_REF: competition-alan
-    # Candidato nº 1 a quebrar o build: o hsl-player não pina a versão do Rerun.
-    RERUN_VERSION: "0.36.3"
+    # Registra que commit do hsl-player entrou na imagem:
+    #   HSL_COMMIT=$(git -C ~/Documents/hsl-player rev-parse --short HEAD) \
+    #     docker compose -f docker/compose.yaml build
+    HSL_COMMIT: "${HSL_COMMIT:-desconhecido}"
+    # 0.21.0 não é chute: é a versão presente nas imagens t1-demo e
+    # hl-unification, que compilaram este brain.  Nas versões novas o
+    # RecordingStream perdeu o método connect(), usado em brain_log.cpp:14.
+    RERUN_VERSION: "0.21.0"
     UID: "${UID:-1000}"
     GID: "${GID:-1000}"
 
 x-robot: &robot
   image: hl-robot:humble
   build: *robot-build
+  # As imagens são locais, nunca foram para um registry.  Sem isto o compose
+  # tenta dar pull da tag a cada `up`, falha, e avisa em vermelho antes de
+  # cair para o build — barulho que parece erro e não é.
+  pull_policy: build
   networks: [hl_net]
   restart: unless-stopped
   stop_grace_period: 5s
@@ -50,7 +71,11 @@ services:
     <<: *robot
     container_name: hl-robot1
     hostname: robot1
-    environment: [ROS_DOMAIN_ID=1]
+    environment:
+      ROS_DOMAIN_ID: "1"
+      # LOG=DEBUG docker compose ... up robot1   → log verboso do brain e do gc_node
+      RCUTILS_LOGGING_SEVERITY: "${LOG:-INFO}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
     volumes: ["../config/robots/robot1.yaml:/etc/hl/config_local.yaml:ro"]
     networks: {hl_net: {ipv4_address: 172.28.0.11}}
 
@@ -58,7 +83,11 @@ services:
     <<: *robot
     container_name: hl-robot3
     hostname: robot3
-    environment: [ROS_DOMAIN_ID=3]
+    environment:
+      ROS_DOMAIN_ID: "3"
+      # LOG=DEBUG docker compose ... up robot3   → log verboso do brain e do gc_node
+      RCUTILS_LOGGING_SEVERITY: "${LOG:-INFO}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
     volumes: ["../config/robots/robot3.yaml:/etc/hl/config_local.yaml:ro"]
     networks: {hl_net: {ipv4_address: 172.28.0.13}}
 
@@ -66,7 +95,11 @@ services:
     <<: *robot
     container_name: hl-robot5
     hostname: robot5
-    environment: [ROS_DOMAIN_ID=5]
+    environment:
+      ROS_DOMAIN_ID: "5"
+      # LOG=DEBUG docker compose ... up robot5   → log verboso do brain e do gc_node
+      RCUTILS_LOGGING_SEVERITY: "${LOG:-INFO}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
     volumes: ["../config/robots/robot5.yaml:/etc/hl/config_local.yaml:ro"]
     networks: {hl_net: {ipv4_address: 172.28.0.15}}
 
@@ -75,7 +108,11 @@ services:
     <<: *robot
     container_name: hl-robot2
     hostname: robot2
-    environment: [ROS_DOMAIN_ID=2]
+    environment:
+      ROS_DOMAIN_ID: "2"
+      # LOG=DEBUG docker compose ... up robot2   → log verboso do brain e do gc_node
+      RCUTILS_LOGGING_SEVERITY: "${LOG:-INFO}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
     volumes: ["../config/robots/robot2.yaml:/etc/hl/config_local.yaml:ro"]
     networks: {hl_net: {ipv4_address: 172.28.0.12}}
 
@@ -83,7 +120,11 @@ services:
     <<: *robot
     container_name: hl-robot4
     hostname: robot4
-    environment: [ROS_DOMAIN_ID=4]
+    environment:
+      ROS_DOMAIN_ID: "4"
+      # LOG=DEBUG docker compose ... up robot4   → log verboso do brain e do gc_node
+      RCUTILS_LOGGING_SEVERITY: "${LOG:-INFO}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
     volumes: ["../config/robots/robot4.yaml:/etc/hl/config_local.yaml:ro"]
     networks: {hl_net: {ipv4_address: 172.28.0.14}}
 
@@ -91,7 +132,11 @@ services:
     <<: *robot
     container_name: hl-robot6
     hostname: robot6
-    environment: [ROS_DOMAIN_ID=6]
+    environment:
+      ROS_DOMAIN_ID: "6"
+      # LOG=DEBUG docker compose ... up robot6   → log verboso do brain e do gc_node
+      RCUTILS_LOGGING_SEVERITY: "${LOG:-INFO}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
     volumes: ["../config/robots/robot6.yaml:/etc/hl/config_local.yaml:ro"]
     networks: {hl_net: {ipv4_address: 172.28.0.16}}
 
@@ -100,13 +145,16 @@ services:
     image: hl-sim:humble
     container_name: hl-sim
     hostname: sim
+    pull_policy: build
     build:
       context: ..
       dockerfile: docker/Dockerfile
       target: sim
-      ssh: ["default"]
+      additional_contexts:
+        hsl: ${HSL_PLAYER_DIR:-https://github.com/robocin/hsl-player.git#main26}
+      network: host         # mesmo motivo do x-robot-build acima (MTU da VPN)
       args:
-        HSL_REF: competition-alan
+        HSL_COMMIT: "${HSL_COMMIT:-desconhecido}"
         UID: "${UID:-1000}"
         GID: "${GID:-1000}"
     networks: {hl_net: {ipv4_address: 172.28.0.10}}
@@ -119,6 +167,8 @@ services:
       DISPLAY: "${DISPLAY:-:0}"
       MUJOCO_GL: glfw
       HL_BRAINS: "${HL_BRAINS:-all}"
+      RCUTILS_LOGGING_SEVERITY: "${LOG:-INFO}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
     # /dev/dri dá aceleração por hardware onde o driver expõe DRI.  Com a NVIDIA
     # proprietária isso não basta: instale o nvidia-container-toolkit no host e
     # troque este bloco pelo `deploy.resources.devices` comentado abaixo.  Sem
@@ -147,14 +197,43 @@ services:
   # na subnet da hl_net.  Precisa de network_mode: host para ver o broadcast
   # original, e por isso fala com a bridge pelo endereço, não pela rede.
   gc-relay:
-    image: hl-sim:humble
+    image: hl-sim:humble          # construída pelo serviço `sim`
     container_name: hl-gc-relay
+    pull_policy: never
     profiles: [relay]
     network_mode: host
     volumes: ["..:/workspace"]
     command:
       ["python", "-m", "hl_sim.cli.gc_relay", "--subnet", "172.28.0.0/16"]
     restart: unless-stopped
+
+  # ── shell de diagnóstico ───────────────────────────────────────────────────
+  # Entra na hl_net com o ROS_DOMAIN_ID que você escolher, para inspecionar o
+  # grafo de um robô de fora dele:
+  #
+  #     DOMAIN=3 docker compose -f docker/compose.yaml --profile debug run --rm doctor
+  #
+  # Lá dentro:
+  #     ros2 node list                          quem está no domínio 3
+  #     ros2 topic list
+  #     ros2 topic hz /low_state                o sim está publicando? (50 Hz)
+  #     ros2 topic echo /robocup/game_controller --once
+  #     ros2 topic echo /LocoApiTopicReq        o brain está mandando comando?
+  #     python -m hl_sim.cli.gc_sniffer         o árbitro chega na bridge?
+  #     ip route ; ip -o link show              MTU e rota, se travar de novo
+  doctor:
+    image: hl-sim:humble          # construída pelo serviço `sim`
+    container_name: hl-doctor
+    pull_policy: never
+    profiles: [debug]
+    networks: {hl_net: {ipv4_address: 172.28.0.200}}
+    volumes: ["..:/workspace"]
+    environment:
+      ROS_DOMAIN_ID: "${DOMAIN:-1}"
+      RCUTILS_COLORIZED_OUTPUT: "1"
+    command: ["bash"]
+    stdin_open: true
+    tty: true
 
 networks:
   hl_net:

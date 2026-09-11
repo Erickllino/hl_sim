@@ -35,10 +35,11 @@ HEADER = """# GERADO por tools/gen_robot_configs.py — não edite à mão.
 """
 
 
-def render(robot) -> str:
+def render(robot, game_controller_ip: str = "172.28.0.1") -> str:
     return HEADER.format(name=robot.name, domain=robot.domain_id, slot=robot.slot) + f"""
 brain_node:
   ros__parameters:
+    game_control_ip: "{game_controller_ip}"
     game:
       team_id: {robot.team_id}
       player_id: {robot.player_id}
@@ -59,7 +60,7 @@ def main() -> None:
     stale = []
     for robot in cfg.robots:
         target = out_dir / f"{robot.name}.yaml"
-        content = render(robot)
+        content = render(robot, cfg.game_controller_ip)
         current = target.read_text(encoding="utf-8") if target.exists() else None
 
         if current == content:

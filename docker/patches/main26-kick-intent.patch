@@ -1,0 +1,110 @@
+--- a/src/brain/include/robot_client.h
++++ b/src/brain/include/robot_client.h
+@@ -2,6 +2,7 @@
+ 
+ #include <iostream>
+ #include <string>
++#include <std_msgs/msg/bool.hpp>
+ 
+ #include "booster_interface/srv/rpc_service.hpp"
+ #include "booster_interface/msg/booster_api_req_msg.hpp"
+@@ -22,6 +23,7 @@
+     RobotClient(Brain* argBrain) : brain(argBrain) {}
+ 
+     void init(string robot_name);
++    void setKickActive(bool active);
+ 
+     /**
+      * @brief 
+@@ -126,6 +128,7 @@
+     bool isStandingStill(double timeBuffer = 1000);
+ 
+ private:
++    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr kickPublisher;
+     int call(booster_interface::msg::BoosterApiReqMsg msg);
+     rclcpp::Publisher<booster_msgs::msg::RpcReqMsg>::SharedPtr publisher;
+     Brain *brain;
+--- a/src/brain/src/robot_client.cpp
++++ b/src/brain/src/robot_client.cpp
+@@ -9,8 +9,17 @@
+ 
+ void RobotClient::init(string robot_name)
+ {
++    kickPublisher = brain->create_publisher<std_msgs::msg::Bool>("kick_intent", 10);
+     string suffix = robot_name.empty() ? "" : ("/" + robot_name);
+     publisher = brain->create_publisher<booster_msgs::msg::RpcReqMsg>("LocoApiTopic" + suffix + "Req", 10);
++}
++
++// Publishes intent only; consumers decide how to execute the normal kick.
++void RobotClient::setKickActive(bool active)
++{
++    std_msgs::msg::Bool msg;
++    msg.data = active;
++    kickPublisher->publish(msg);
+ }
+ 
+ int RobotClient::call(booster_interface::msg::BoosterApiReqMsg msg)
+--- a/src/brain/src/brain_tree.cpp
++++ b/src/brain/src/brain_tree.cpp
+@@ -3789,6 +3789,7 @@
+ 
+ NodeStatus Kick::onStart()
+ {
++    brain->client->setKickActive(false);
+     _minRange = brain->data->ball.range;
+     _speed = 0.5;
+     _startTime = brain->get_clock()->now();
+@@ -3804,6 +3805,7 @@
+         && brain->distToObstacle(brain->data->ball.yawToRobot) < kickAoSafeDist
+     ) {
+         brain->client->setVelocity(-0.1, 0, 0);
++        brain->client->setKickActive(false);
+         return NodeStatus::SUCCESS;
+     }
+ 
+@@ -3815,6 +3817,7 @@
+         speed = std::min(speed, brain->config->get_soft_kickoff_speed());
+     }
+     brain->client->crabWalk(angle, speed);
++    brain->client->setKickActive(true);
+     return NodeStatus::RUNNING;
+ }
+ 
+@@ -3837,6 +3840,7 @@
+         )
+     ) {
+         log("ball moved, abort kick");
++        brain->client->setKickActive(false);
+         return NodeStatus::SUCCESS;
+     }
+ 
+@@ -3852,6 +3856,7 @@
+         && brain->distToObstacle(brain->data->ball.yawToRobot) < kickAoSafeDist
+     ) {
+         brain->client->setVelocity(-0.1, 0, 0);
++        brain->client->setKickActive(false);
+         return NodeStatus::SUCCESS;
+     }
+ 
+@@ -3861,6 +3866,7 @@
+     msecs = msecs + brain->data->ball.range / speed * 1000;
+     if (brain->msecsSince(_startTime) > msecs) { 
+         brain->client->setVelocity(0, 0, 0);
++        brain->client->setKickActive(false);
+         return NodeStatus::SUCCESS;
+     }
+ 
+@@ -3877,11 +3883,13 @@
+         brain->client->crabWalk(angle, speed);
+     }
+ 
++    brain->client->setKickActive(true);
+     return NodeStatus::RUNNING;
+ }
+ 
+ void Kick::onHalted()
+ {
++    brain->client->setKickActive(false);
+     _startTime -= rclcpp::Duration(100, 0);
+ }
+ 

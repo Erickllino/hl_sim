@@ -50,6 +50,7 @@ from hl_sim.agents.base import (
 )
 from hl_sim.agents.scripted import ScriptedAgent
 from hl_sim.sim import layout as scene_layout
+from hl_sim.sim.kick import KickConfig
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 SCENE_PATH = paths.DEFAULT_SCENE
@@ -99,10 +100,7 @@ class _KinState:
 # ── SimBridge ──────────────────────────────────────────────────────────────────
 
 class SimBridge:
-    SHOOT_FORCE = 10.0
-    SHOOT_TICKS = 5
-
-    def __init__(self, agents: list[AgentInterface]) -> None:
+    def __init__(self, agents: list[AgentInterface], kick: Optional[KickConfig] = None) -> None:
         paths.require(SCENE_PATH, "cena do MuJoCo")
         if len(agents) > NUM_ROBOTS:
             raise ValueError(f"A cena suporta no máximo {NUM_ROBOTS} robôs.")
@@ -113,9 +111,14 @@ class SimBridge:
         # Índices derivados do modelo por nome; estoura aqui, com mensagem clara,
         # se a cena mudar de forma incompatível.
         self.layout = scene_layout.resolve(self.m)
+        self.kick = kick if kick is not None else KickConfig.load()
+        self._disable_robot_ball_contacts()
 
         self._kin:             list[_KinState] = [_KinState() for _ in agents]
         self._shoot_remaining: list[int]        = [0] * len(agents)
+        self._kick_consumed = [False] * len(self.agents)
+        self._last_kick_id = [0] * len(self.agents)
+        self._kick_force = [np.zeros(2) for _ in self.agents]
         self._tick = 0
 
         _ok(f"Modelo carregado  nbody={self.m.nbody}  nu={self.m.nu}  "
@@ -123,6 +126,25 @@ class SimBridge:
         _ok(f"Agentes ({len(agents)}): {[a.robot_name for a in agents]}")
 
     # ── episode reset ──────────────────────────────────────────────────────────
+
+    def _disable_robot_ball_contacts(self) -> None:
+        # Bit exclusivo: mantém bola–chão/gols sem bola–robôs.
+        # Geometrias visuais (máscaras zero) continuam sem colisão.
+        ball_bit = 1 << 29
+        roots = {r.trunk_body_id for r in self.layout.robots}
+        for geom in range(self.m.ngeom):
+            body = int(self.m.geom_bodyid[geom])
+            if not (self.m.geom_contype[geom] or self.m.geom_conaffinity[geom]):
+                continue
+            if body == self.layout.ball_body_id:
+                self.m.geom_contype[geom] = ball_bit
+                self.m.geom_conaffinity[geom] = ball_bit
+                continue
+            while body and body not in roots:
+                body = int(self.m.body_parentid[body])
+            if body not in roots:
+                self.m.geom_contype[geom] |= ball_bit
+                self.m.geom_conaffinity[geom] |= ball_bit
 
     def reset(self) -> None:
         mujoco.mj_resetDataKeyframe(self.m, self.d, 0)
@@ -136,6 +158,9 @@ class SimBridge:
             ks.yaw = _quat_to_yaw(q[3:7])
 
         self._shoot_remaining = [0] * len(self.agents)
+        self._kick_consumed = [False] * len(self.agents)
+        self._last_kick_id = [0] * len(self.agents)
+        self._kick_force = [np.zeros(2) for _ in self.agents]
         self._tick = 0
 
         for agent in self.agents:
@@ -196,13 +221,31 @@ class SimBridge:
             ctrl[1] = cmd.head_pitch
             self.d.ctrl[ctrl_slice] = ctrl
 
-        if cmd.shoot and self._shoot_remaining[i] == 0:
-            self._shoot_remaining[i] = self.SHOOT_TICKS
+        if not cmd.shoot or cmd.kick_id != self._last_kick_id[i]:
+            self._kick_consumed[i] = False
+        self._last_kick_id[i] = cmd.kick_id
+
+        ball_pos = self.d.xpos[ball_id]
+        delta = ball_pos[:2] - self.d.qpos[qposadr:qposadr + 2]
+        trunk_yaw = _quat_to_yaw(self.d.qpos[qposadr + 3:qposadr + 7])
+        angle = math.atan2(delta[1], delta[0]) - trunk_yaw
+        angle = (angle + math.pi) % (2 * math.pi) - math.pi
+        can_kick = (
+            np.linalg.norm(delta) <= self.kick.distance_m
+            and abs(angle) <= math.radians(self.kick.max_angle_degrees)
+            and ball_pos[2] <= self.kick.max_ball_height_m
+        )
+        if (cmd.shoot and not self._kick_consumed[i] and can_kick
+                and not any(self._shoot_remaining)
+                and not np.any(self.d.xfrc_applied[ball_id, :2])):
+            self._kick_consumed[i] = True
+            self._shoot_remaining[i] = max(1, math.ceil(self.kick.duration_seconds * CONTROL_HZ))
+            self._kick_force[i] = self.kick.force_newtons * np.array([
+                math.cos(trunk_yaw), math.sin(trunk_yaw),
+            ])
 
         if self._shoot_remaining[i] > 0:
-            trunk_yaw = _quat_to_yaw(self.d.xquat[trunk_id])
-            fx = self.SHOOT_FORCE * math.cos(trunk_yaw)
-            fy = self.SHOOT_FORCE * math.sin(trunk_yaw)
+            fx, fy = self._kick_force[i]
             self.d.xfrc_applied[ball_id, 0] += fx
             self.d.xfrc_applied[ball_id, 1] += fy
             self._shoot_remaining[i] -= 1

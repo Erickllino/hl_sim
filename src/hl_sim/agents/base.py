@@ -64,6 +64,7 @@ class ActionCmd:
     head_pitch: float = 0.0   # rad
     head_yaw:   float = 0.0   # rad
     shoot:      bool  = False
+    kick_id:    int   = 0  # identifica novas intenções mesmo entre dois ticks
     joint_pos:  Optional[np.ndarray] = None  # 21 alvos de junta (/joint_ctrl)
 
 

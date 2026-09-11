@@ -7,8 +7,8 @@ comandos ROS2 recebidos do brain em ActionCmd para o SimBridge.
 Tópicos publicados (sim → brain):
     /low_state                    booster_interface/msg/LowState
     /odometer_state               booster_interface/msg/Odometer
-    /booster_vision/detection     vision_interface/msg/Detections
-    /booster_vision/line_segments vision_interface/msg/LineSegments
+    /booster_soccer/detection     vision_interface/msg/Detections
+    /booster_soccer/line_segments vision_interface/msg/LineSegments
     /head_pose                    geometry_msgs/msg/Pose
 
 Tópicos assinados:
@@ -31,9 +31,27 @@ import rclpy
 from rclpy.node import Node
 
 from booster_msgs.msg import RpcReqMsg
-from booster_interface.msg import LowState, LowCmd, Odometer, MotorState
-from vision_interface.msg import Detections, DetectedObject, LineSegments
+from booster_interface.msg import LowState, Odometer, MotorState
+
+# LowCmd só existe em alguns branches do hsl-player: competition-alan traz 16
+# mensagens em booster_interface, sim_stable traz 4.  Ele serve ao caminho
+# opcional /joint_ctrl (deploy → sim, alvos de junta), que não faz parte da
+# cadeia do brain — então a ausência dele não pode derrubar o simulador.
+try:
+    from booster_interface.msg import LowCmd
+except ImportError:
+    LowCmd = None
+from vision_interface.msg import Detections, DetectedObject
+
+# Mesma história do LowCmd: vision_interface tem 10 mensagens em competition-alan
+# e 2 em sim_stable.  O brain do sim_stable nem assina /booster_soccer/line_segments,
+# então a ausência do tipo é informação, não erro.
+try:
+    from vision_interface.msg import LineSegments
+except ImportError:
+    LineSegments = None
 from geometry_msgs.msg import Pose
+from std_msgs.msg import Bool
 
 from hl_sim.agents.base import AgentInterface, ActionCmd, SensorState
 
@@ -68,6 +86,22 @@ SENSOR_QUAT_IDX = 0
 SENSOR_GYRO_IDX = 4
 
 
+def _set_if(msg, field: str, value) -> bool:
+    """
+    Atribui `field` só se a mensagem daquele build o tiver.
+
+    Os schemas de visão divergem entre branches do hsl-player: Detections perde
+    radar_x/radar_y/corner_pos no sim_stable, e DetectedObject perde
+    color/target_uv/position_cam/position_confidence.  Os de sensor (LowState,
+    Odometer, MotorState) são idênticos.  Em vez de ramificar por versão, o sim
+    preenche o que o schema oferece — o que vale nos dois branches.
+    """
+    if hasattr(msg, field):
+        setattr(msg, field, value)
+        return True
+    return False
+
+
 class ROS2Agent(AgentInterface):
     """
     Ponte entre SimBridge e hsl-player via ROS2.
@@ -89,18 +123,31 @@ class ROS2Agent(AgentInterface):
         super().__init__(robot_name, team_id=team_id, player_id=player_id)
         self._node      = node
         self._cmd       = ActionCmd()
+        self._kick_active = False
+        self._kick_updated = 0.0
+        self._kick_id = 0
         self._joint_pos = None  # 21 body joint targets from deploy (/joint_ctrl)
 
         # ── publishers (sim → brain/deploy) ───────────────────────────────────
         self._pub_low   = node.create_publisher(LowState,        '/low_state',                    10)
         self._pub_odom  = node.create_publisher(Odometer,        '/odometer_state',               10)
-        self._pub_det   = node.create_publisher(Detections,      '/booster_vision/detection',     10)
-        self._pub_lines = node.create_publisher(LineSegments,    '/booster_vision/line_segments', 10)
+        self._pub_det   = node.create_publisher(Detections,      '/booster_soccer/detection',     10)
+        self._pub_lines = (
+            node.create_publisher(LineSegments, '/booster_soccer/line_segments', 10)
+            if LineSegments is not None else None
+        )
         self._pub_head  = node.create_publisher(Pose,            '/head_pose',                    10)
 
         # ── subscribers ────────────────────────────────────────────────────────
         node.create_subscription(RpcReqMsg, 'LocoApiTopicReq', self._on_loco,       10)
-        node.create_subscription(LowCmd,    '/joint_ctrl',      self._on_joint_ctrl, 10)
+        node.create_subscription(Bool, 'kick_intent', self._on_kick_intent, 10)
+        if LowCmd is not None:
+            node.create_subscription(LowCmd, '/joint_ctrl', self._on_joint_ctrl, 10)
+        else:
+            node.get_logger().info(
+                "booster_interface/LowCmd não existe neste build do hsl-player; "
+                "/joint_ctrl desativado (só afeta o caminho do deploy, não o brain)."
+            )
 
         node.get_logger().info(
             f"ROS2Agent '{robot_name}' (team_id={team_id}, player_id={player_id}) pronto."
@@ -111,6 +158,9 @@ class ROS2Agent(AgentInterface):
     def reset(self) -> None:
         with self._lock:
             self._cmd       = ActionCmd()
+            self._kick_active = False
+            self._kick_updated = 0.0
+            self._kick_id = 0
             self._joint_pos = None
             # O estado de jogo NÃO é resetado aqui: ele pertence ao GameController,
             # não ao episódio do simulador.
@@ -124,13 +174,24 @@ class ROS2Agent(AgentInterface):
                 vyaw       = self._cmd.vyaw,
                 head_yaw   = self._cmd.head_yaw,
                 head_pitch = self._cmd.head_pitch,
-                shoot      = self._cmd.shoot,
+                shoot      = self._cmd.shoot or (
+                    self._kick_active and _time.monotonic() - self._kick_updated < 0.25
+                ),
+                kick_id    = self._kick_id,
                 joint_pos  = self._joint_pos.copy() if self._joint_pos is not None else None,
             )
             self._cmd.shoot = False  # shoot é one-shot
         return cmd
 
     # ── callbacks (brain → sim) ────────────────────────────────────────────────
+
+    def _on_kick_intent(self, msg: Bool) -> None:
+        with self._lock:
+            now = _time.monotonic()
+            if msg.data and (not self._kick_active or now - self._kick_updated >= 0.25):
+                self._kick_id += 1
+            self._kick_active = msg.data
+            self._kick_updated = now
 
     def _on_loco(self, msg: RpcReqMsg) -> None:
         try:
@@ -157,7 +218,7 @@ class ROS2Agent(AgentInterface):
             elif api_id == KROBOCUP_WALK:
                 pass  # walk is always active via /rl_move in sim
 
-    def _on_joint_ctrl(self, msg: LowCmd) -> None:
+    def _on_joint_ctrl(self, msg) -> None:   # LowCmd, quando existe
         cmds = msg.motor_cmd
         n = min(len(cmds), NUM_BODY_JOINTS)
         pos = np.array([cmds[i].q for i in range(n)], dtype=np.float64)
@@ -169,8 +230,10 @@ class ROS2Agent(AgentInterface):
     def _publish_sensors(self, state: SensorState) -> None:
         self._publish_low_state(state) # /low_state
         self._publish_odometer(state) # /odometer_state
-        self._publish_detections(state) # /booster_vision/detection
-        self._pub_lines.publish(LineSegments()) # /booster_vision/line_segments (não implementado, mas o brain espera o tópico)
+        self._publish_detections(state) # /booster_soccer/detection
+        # Tópico vazio: o brain de alguns branches espera vê-lo existir.
+        if self._pub_lines is not None:
+            self._pub_lines.publish(LineSegments())
         self._publish_head_pose(state) # /head_pose
 
     def _publish_low_state(self, state: SensorState) -> None:
@@ -222,8 +285,12 @@ class ROS2Agent(AgentInterface):
         det = DetectedObject()
         det.label      = 'Ball'
         det.confidence = 100.0
-        det.position_projection = [float(ball_rel[0]), float(ball_rel[1]), float(ball_rel[2])]
-        det.position            = [float(ball_rel[0]), float(ball_rel[1]), float(ball_rel[2])]
+        pos = [float(ball_rel[0]), float(ball_rel[1]), float(ball_rel[2])]
+        det.position_projection = pos
+        det.position            = pos
+        _set_if(det, "position_cam", pos)
+        _set_if(det, "position_confidence", 100)
+        _set_if(det, "color", "")
 
         # projeta posição 3D para pixel para o brain usar no CamTrackBall
         with self._lock:
@@ -236,17 +303,19 @@ class ROS2Agent(AgentInterface):
         det.ymin = int(v - half)
         det.ymax = int(v + half)
 
+        _set_if(det, "target_uv", [float(u), float(v)])
+
         msg.detected_objects.append(det)
 
-        # brain's detectProcessVisionBox reads corner_pos as 5 corners × 2 coords (10 floats)
-        # wide forward-facing trapezoid in robot frame (x=forward, y=left)
-        msg.corner_pos = [
+        # detectProcessVisionBox do brain lê corner_pos como 5 cantos × 2 coords
+        # (10 floats): trapézio largo à frente, no frame do robô (x=frente, y=esquerda).
+        _set_if(msg, "corner_pos", [
             8.0,  5.0,   # far-left
             8.0, -5.0,   # far-right
             1.0, -1.5,   # near-right
             1.0,  1.5,   # near-left
-            0.0,  0.0,   # robot origin (5th point)
-        ]
+            0.0,  0.0,   # origem do robô (5º ponto)
+        ])
 
         self._pub_det.publish(msg)
 

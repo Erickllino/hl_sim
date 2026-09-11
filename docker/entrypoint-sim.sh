@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Container do simulador: ROS2 + as 4 interfaces do hsl-player + venv do hl_sim.
-set -euo pipefail
+set -eo pipefail
 
+# Sem `set -u` aqui: os setup.bash do ROS2 leem AMENT_TRACE_SETUP_FILES sem
+# definir, e com -u o entrypoint morre na primeira linha, antes de qualquer log.
+set +u
 source /opt/ros/humble/setup.bash
 source "${HSL_DIR}/install/setup.bash"
+set -u
 
 # O venv tem --system-site-packages, então rclpy continua visível depois disto.
 if [ -f /opt/venv/bin/activate ]; then

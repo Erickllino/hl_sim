@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Container de um robô: sourceia ROS2 + workspace do hsl-player e instala o
 # config_local.yaml deste robô antes de subir brain + game_controller.
-set -euo pipefail
+set -eo pipefail
 
+# Sem `set -u` aqui: os setup.bash do ROS2 leem AMENT_TRACE_SETUP_FILES sem
+# definir, e com -u o entrypoint morre na primeira linha, antes de qualquer log.
+set +u
 source /opt/ros/humble/setup.bash
 source "${HSL_DIR}/install/setup.bash"
+set -u
 
 # ── config_local.yaml ─────────────────────────────────────────────────────────
 # brain/launch/launch.py:17 carrega config_local.yaml DEPOIS de config.yaml — é o

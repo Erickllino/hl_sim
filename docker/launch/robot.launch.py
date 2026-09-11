@@ -6,8 +6,8 @@ No robô real, brain_node e game_controller_node rodam na mesma máquina, no mes
 grafo ROS2.  Aqui é igual: um container = um robô = os dois nós no mesmo
 ROS_DOMAIN_ID.
 
-Não reimplementa nada — dá include nos launch files do próprio hsl-player, para
-não divergir deles quando o brain mudar.
+Inclui o launch do brain. O nó do GameController recebe parâmetros de rede
+próprios dos containers, sem a whitelist dos IPs dos robôs físicos.
 
     ros2 launch /etc/hl/robot.launch.py
     ros2 launch /etc/hl/robot.launch.py tree:=game.xml disable_log:=true
@@ -17,12 +17,10 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
-    gc_launch = PathJoinSubstitution(
-        [FindPackageShare("game_controller"), "launch", "launch.py"]
-    )
     brain_launch = PathJoinSubstitution(
         [FindPackageShare("brain"), "launch", "launch.py"]
     )
@@ -40,7 +38,13 @@ def generate_launch_description() -> LaunchDescription:
         # Ponte UDP 3838 → /robocup/game_controller.  Um por container: cada robô
         # tem sua própria network namespace, então não há disputa pela porta
         # 3838 (o game_controller_node faz bind sem SO_REUSEADDR).
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(gc_launch)),
+        Node(
+            package="game_controller",
+            executable="game_controller_node",
+            name="game_controller",
+            output="screen",
+            parameters=[{"port": 3838, "enable_ip_white_list": False}],
+        ),
 
         # O brain lê team_id/player_id/player_role do config_local.yaml que o
         # entrypoint instalou a partir de config/match.yaml.

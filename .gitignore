@@ -14,3 +14,8 @@ MUJOCO_LOG.TXT
 
 # gerados por robô a partir de config/match.yaml
 config/robots/
+
+# SDK interno da Booster — proprietário, copiado do robô (ver vendor/README.md).
+# Só os headers REAIS ficam de fora: vendor/booster_internal.stub/ é código nosso
+# e é versionado de propósito.
+vendor/booster_internal/
