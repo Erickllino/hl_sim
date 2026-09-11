@@ -63,6 +63,7 @@ hl_sim/
 
 
 
+
 HOST (notebook)                                   Docker bridge hl_net 172.28.0.0/16
 ┌────────────────────────┐   UDP 3838 broadcast   ┌──────────── container robotN (IP .1N, ROS_DOMAIN_ID=N) ────────────┐
 │ GameController oficial │ ─────────────────────▶ │ game_controller_node ──/robocup/game_controller──▶ brain_node       │
