@@ -14,7 +14,8 @@ O árbitro é o GameController oficial, executado fora destes containers.
 
 - Linux com Docker Engine e Docker Compose v2 com suporte a `include` e contextos
   adicionais de build. Confira com `docker version` e `docker compose version`.
-- Git e acesso ao GitHub e aos repositórios de pacotes durante o primeiro build.
+- Git, agente SSH com uma chave autorizada no repositório do brain, e acesso
+  ao GitHub e aos repositórios de pacotes durante o primeiro build.
 - Para o viewer: sessão gráfica X11/XWayland, `DISPLAY` definido, comando `xhost`
   e dispositivo `/dev/dri`. O Compose já monta o socket X11 e esse dispositivo.
 - Para partidas controladas pelo brain: [GameController oficial](https://github.com/RoboCup-HumanoidSoccerLeague/GameController),
@@ -33,9 +34,31 @@ cp .env.example .env
 ```
 
 Em `.env`, deixe `HSL_PLAYER_DIR` vazio para o BuildKit clonar automaticamente
-`robocin/hsl-player`, branch **main26**. Não é necessário obter o SDK interno nem
-copiar o stub. Para desenvolver o brain em um clone local atualizado da main26,
+`robocin/hsl-player`, branch **main** (antiga `main26`, mesmo commit `68e1b79`). O build usa somente o SDK público da Booster; não depende
+de arquivos em `vendor/`. Para desenvolver o brain em um clone local atualizado da main,
 coloque o caminho absoluto desse clone em `HSL_PLAYER_DIR`.
+
+O repositório do brain requer autenticação SSH. O Compose encaminha o agente
+SSH ao BuildKit sem copiar sua chave para a imagem. Antes do build:
+
+```bash
+# Confira se sua chave autorizada no GitHub está carregada.
+ssh-add -l
+
+# Se não houver agente/chave, inicie um e adicione sua chave (ajuste o caminho).
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+```
+
+Para usar um clone local autenticado, em vez do contexto Git remoto:
+
+```bash
+git clone --branch main git@github.com:robocin/hsl-player.git ../hsl-player
+```
+
+Depois coloque em `.env` o caminho absoluto desse diretório em `HSL_PLAYER_DIR`.
+O Docker copia os arquivos do clone e não precisa acessar esse repositório remoto
+durante o build. Os downloads das outras dependências ainda precisam de internet.
 
 Edite `config/match.yaml` antes de gerar as configurações:
 
@@ -244,7 +267,7 @@ pkill -CONT -x brain_node
 ```
 
 Não use `docker pause` neste teste: ele congela também os terminais do container.
-Esses comandos pressupõem o `robot_name` vazio da configuração padrão main26.
+Esses comandos pressupõem o `robot_name` vazio da configuração padrão do brain.
 
 ## Ajustar o chute e desenvolver
 

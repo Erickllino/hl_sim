@@ -1,5 +1,9 @@
 # Build do container `robot` (Docker) — 11/09/2026
 
+> Registro histórico. Em 12/09/2026, a migração para `robocin/hsl-player@main26`
+> eliminou a dependência do SDK interno. O stub e sua instalação no Docker
+> foram removidos. Consulte o [README](../README.md) para executar a versão atual.
+
 Investigação de por que `docker compose -f docker/compose.yaml up` não builda o
 container `robot` (brain + game_controller do `hsl-player`). Quatro problemas
 foram encontrados em cadeia — resolver um só revela o próximo. Três já têm fix

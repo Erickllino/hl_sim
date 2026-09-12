@@ -1,13 +1,16 @@
 # main26 e chute simplificado
 
-O Compose usa o contexto Git `https://github.com/robocin/hsl-player.git#main26`.
+O Compose usa o contexto Git `git@github.com:robocin/hsl-player.git#main`.
+Em 12/09/2026, a antiga branch `main26` passou a estar em `main`, com o mesmo
+commit. O contexto usa a autenticação do agente SSH encaminhado pelo Compose.
 A versão validada nesta migração é `68e1b79c9166c8346f2ee39c62acc33e9931e80a`.
 `HSL_PLAYER_DIR` vazio seleciona esse contexto; um caminho local substitui a
-fonte, e deve apontar para um checkout atualizado de main26. Para reproduzir
+fonte, e deve apontar para um checkout atualizado de main. Para reproduzir
 exatamente uma revisão, também é possível usar nesse campo uma URL Git com
 `#<commit completo>`. A branch remota pode avançar entre builds.
 
-O brain desta branch não usa `booster_internal`: o Dockerfile pula o stub.
+O brain desta branch usa apenas o SDK público da Booster. O stub e sua lógica
+de instalação foram removidos; o Dockerfile não depende de `vendor/`.
 A visão agora usa `/booster_soccer/detection` e
 `/booster_soccer/line_segments`. Reconstrua **robot e sim** para usar as mesmas
 interfaces ROS:
@@ -19,6 +22,10 @@ docker compose up -d --no-build sim robot1
 
 Adicione os outros serviços robot desejados ao `up`. Os robôs continuam
 aguardando o GameController conforme o fluxo normal da partida.
+
+O launch Docker recebe UDP 3838 sem a whitelist de IPs físicos do upstream.
+O endereço de retorno do brain ao árbitro é configurado por
+`game_controller_ip` em `config/match.yaml` e propagado pelo gerador.
 
 ## Intenção de chute
 

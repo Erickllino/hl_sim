@@ -5,7 +5,7 @@
 #      python tools/gen_robot_configs.py      # gera config/robots/*.yaml
 #      xhost +local:docker                    # só se for usar o viewer
 #
-#  O brain vem de robocin/hsl-player, branch main26 (contexto Git do BuildKit).
+#  O brain vem de robocin/hsl-player, branch main (antiga main26) (contexto Git do BuildKit).
 #  Para desenvolvimento local: export HSL_PLAYER_DIR=/caminho/para/hsl-player
 #
 #  Subir só os robôs que você quer (N ≤ 6):
@@ -27,10 +27,11 @@ x-robot-build: &robot-build
   context: ..
   dockerfile: docker/Dockerfile
   target: robot
-  # BuildKit clona main26 por padrão. HSL_PLAYER_DIR permite um clone local.
-  # O clone local também deve estar na main26 para receber o patch de intenção.
+  # BuildKit clona main por padrão. HSL_PLAYER_DIR permite um clone local.
+  # O clone local também deve estar na main para receber o patch de intenção.
+  ssh: [default]
   additional_contexts:
-    hsl: ${HSL_PLAYER_DIR:-https://github.com/robocin/hsl-player.git#main26}
+    hsl: ${HSL_PLAYER_DIR:-git@github.com:robocin/hsl-player.git#main}
   # Ainda necessário: o download do Rerun SDK vai para o github.com, e a rota
   # para lá sai por um túnel IPsec com MTU 1400 enquanto a bridge do Docker usa
   # 1500.  O ICMP "fragmentation needed" se perde, os pacotes grandes somem e o
@@ -150,8 +151,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       target: sim
+      ssh: [default]
       additional_contexts:
-        hsl: ${HSL_PLAYER_DIR:-https://github.com/robocin/hsl-player.git#main26}
+        hsl: ${HSL_PLAYER_DIR:-git@github.com:robocin/hsl-player.git#main}
       network: host         # mesmo motivo do x-robot-build acima (MTU da VPN)
       args:
         HSL_COMMIT: "${HSL_COMMIT:-desconhecido}"

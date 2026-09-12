@@ -10,7 +10,7 @@
 #  objetivo do projeto estaria perdida.  O caminho do workspace é o mesmo do robô
 #  real — /home/booster/Workspace/hsl-player — para os logs e paths baterem.
 #
-#  O contexto nomeado `hsl` usa robocin/hsl-player@main26 por padrão.
+#  O contexto nomeado `hsl` usa robocin/hsl-player@main (antiga main26) por padrão.
 #  BuildKit clona o repositório; HSL_PLAYER_DIR permite um clone local.
 #  O patch versionado de kick_intent publica a intenção do Kick normal.
 #
@@ -74,7 +74,7 @@ ENV HSL_COMMIT=${HSL_COMMIT}
 LABEL org.opencontainers.image.revision=${HSL_COMMIT}
 
 # ────────────────────────────────────────────────────────────── source ───────
-# Espelha só o src/ da fonte main26 (GitHub ou clone local).  build/, install/ e log/ ficam na raiz do
+# Espelha só o src/ da fonte main (GitHub ou clone local).  build/, install/ e log/ ficam na raiz do
 # repo do hsl-player, então nem entram aqui.  Os estágios seguintes montam este
 # como bind e copiam pacote a pacote — nada dele vira camada da imagem final.
 FROM base AS source
@@ -193,7 +193,7 @@ WORKDIR ${HSL_DIR}
 
 # Mesmo esquema do estágio msgs: localizados pelo nome do pacote.
 # Do `vision` levamos só os YAML — o nó não sobe (precisa de PCL/ZED e disputaria
-# /booster_vision/detection com o sim), mas brain/launch/launch.py:12 lê
+# /booster_soccer/detection com o sim), mas brain/launch/launch.py:12 lê
 # vision/share/vision/config/vision.yaml na hora do launch.
 RUN --mount=type=bind,from=source,source=/hsl-src,target=/hsl-src \
     set -eux; \
@@ -207,50 +207,6 @@ RUN --mount=type=bind,from=source,source=/hsl-src,target=/hsl-src \
     cp "$(dirname "$vf")"/config/*.yaml /tmp/vision-config/; \
     ls src /tmp/vision-config
 
-
-# ── SDK INTERNO da Booster (condicional) ─────────────────────────────────────
-# Alguns branches do hsl-player incluem <booster_internal/robot/b1/...>, que não
-# existe em repositório público nenhum — é o SDK que a Booster entrega aos times.
-# Ele entrou junto com o "RL Kick" (ago/2025) e está em competition-alan; branches
-# como sim_stable e main não usam.  Por isso a exigência é derivada do código
-# copiado, não assumida.  Ver vendor/README.md.
-#
-# Duas fontes, nesta ordem:
-#   vendor/booster_internal/       headers de verdade, copiados do robô (gitignored)
-#   vendor/booster_internal.stub/  stub versionado, só api_ids conhecidos + tipos
-# O stub existe para a imagem de SIMULAÇÃO compilar sem o SDK proprietário; ele
-# tem quatro api_ids inventados, e por isso a imagem sai marcada.
-COPY --chown=booster:booster vendor/ /tmp/vendor/
-RUN set -eu; \
-    if grep -rq "booster_internal" src/brain/ 2>/dev/null; then \
-        if [ -d /tmp/vendor/booster_internal ]; then \
-            cp -r /tmp/vendor/booster_internal /usr/local/include/; \
-            echo "· este brain usa booster_internal — headers reais, de vendor/"; \
-        elif [ -d /tmp/vendor/booster_internal.stub ]; then \
-            cp -r /tmp/vendor/booster_internal.stub /usr/local/include/booster_internal; \
-            touch /usr/local/include/booster_internal/.STUB; \
-            echo "· ATENÇÃO: booster_internal veio do STUB (vendor/booster_internal.stub/)."; \
-            echo "  Imagem válida para simulação; NÃO instale no robô real."; \
-        else \
-            echo "" >&2; \
-            echo "ERRO: este branch do brain inclui <booster_internal/...>, mas" >&2; \
-            echo "      nem vendor/booster_internal/ nem vendor/booster_internal.stub/ existem." >&2; \
-            echo "" >&2; \
-            echo "  Três saídas:" >&2; \
-            echo "  1) copiar os headers do robô real:" >&2; \
-            echo "       scp -r booster@<ip>:/usr/local/include/booster_internal vendor/" >&2; \
-            echo "  2) restaurar o stub versionado (git checkout vendor/booster_internal.stub)" >&2; \
-            echo "  3) buildar um branch que não precisa dele:" >&2; \
-            echo "       git -C ~/Documents/hsl-player worktree add ../hsl-player-sim sim_stable" >&2; \
-            echo "       HSL_PLAYER_DIR=../../hsl-player-sim docker compose ... build" >&2; \
-            echo "" >&2; \
-            echo "  Detalhes em vendor/README.md" >&2; \
-            exit 1; \
-        fi; \
-    else \
-        echo "· este brain não usa booster_internal — nada a instalar"; \
-    fi; \
-    rm -rf /tmp/vendor
 
 # O Kick normal só manda velocidade. Publicar sua intenção permite que o
 # consumidor de locomoção execute o chute sem inferi-lo de uma aproximação.
